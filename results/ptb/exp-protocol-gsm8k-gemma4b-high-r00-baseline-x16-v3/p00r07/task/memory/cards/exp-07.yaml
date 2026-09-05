@@ -1,0 +1,109 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-02T21:25:00Z'
+situation:
+  elapsed_h: 8.15
+  remaining_h: 1.85
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.736, protocol_n: 500}
+  trigger: "exp-06 scored 0.724 against exp-04's 0.736 on the same dev-500 -- a 1.2-point gap against a 2.0-point stderr, i.e. two checkpoints on one continued-training trajectory that differ by noise. That is exactly the situation where a weight average usually beats both endpoints, and it costs no training."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "result.measurements[0], conclusion"}
+    - {path: /home/ben/task/analysis/exp-04_dev500.json, locator: "summary.accuracy=0.736"}
+    - {path: /home/ben/task/analysis/exp-06_dev500.json, locator: "summary.accuracy=0.724"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning from exp-04", reason: "1.85 h left; RFT needs ~0.6 h of sampling plus ~0.7 h of training plus eval, with no margin left to finalise and verify if anything goes wrong. exp-05 already showed what a late failure costs"}
+    - {option: "Add a repetition penalty to the decode config to recover the 3 non-terminating dev-500 items", reason: "worth at most +0.6 points and it perturbs the arithmetic token distribution on all 500 items; the soup is a larger expected effect for the same eval cost"}
+    - {option: "Stop here and ship exp-04", reason: "that is the fallback and it is already installed in final_model/; the soup is tested against it and only replaces it if it wins"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "Two checkpoints, exp-04 (0.736) and its own continuation exp-06 (0.724), sit within noise of each other on dev-500, and the external-data lever that produced them has saturated. Picking either endpoint discards whatever the other one learned; picking the higher of two noisy numbers also risks selecting noise."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_dev500.json, locator: "summary", observation: "0.736, stopped_rate 0.994, 129 clean-stop errors"}
+    - {path: /home/ben/task/analysis/exp-06_dev500.json, locator: "summary", observation: "0.724, stopped_rate 0.982, 130 clean-stop errors"}
+    - {path: /home/ben/task/memory/index.md, locator: "exp-04, exp-06 rows", observation: "exp-06 is one more epoch from exp-04/final, so both lie in the same loss basin"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A uniform (alpha=0.5) parameter-space average of exp-04/final and exp-06/final, served with the same greedy decode config, will score higher on dev-500 than exp-04's 0.736."
+  mechanism: "exp-06 was initialised from exp-04 and trained one epoch at lr 5e-6, so the two sit in the same basin and their difference is largely optimisation noise on disjoint data shards. Averaging in weight space cancels that noise while keeping the shared solution, the standard model-soup effect for checkpoints along one trajectory."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0.5 to +2.5 points"
+  falsified_if: "dev-500 accuracy of the average is at or below exp-04's 0.736, or the clean-stop rate falls below exp-04's 0.994 by more than 0.01"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/exp-01_devset_manifest.jsonl
+      source: local
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "No training data: this card only averages two existing checkpoints' weights. The manifest is carried over from exp-01 to record the dev slice; mixture_weight 0.0, never a training input."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors + torch 2.8.0 (scripts/soup.py)"
+    peft: none
+    hyperparams: {alpha: 0.5, precision: bf16, seed: 0}
+    target_format: "unchanged: chain of thought, 'ANSWER: <int>', <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/soup.py, --a, /home/ben/task/ckpts/exp-04/final, --b, /home/ben/task/ckpts/exp-06/final, --out, /home/ben/task/ckpts/exp-07-soup, --alpha, '0.5']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07-soup
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.736
+    path: /home/ben/task/eval/exp-04_dev500.json
+  diagnostic:
+    what: "clean-stop rate (stop_reason=stop); a bad average shows up first as degenerate, non-terminating output"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.06
+  output_checkpoint: /home/ben/task/ckpts/exp-07-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07-soup, step: null}
+  training_summary: {final_loss: null, steps: null, notes: "no training; both safetensors shards averaged at alpha=0.5, non-float tensors asserted identical, tokenizer/processor/greedy generation_config copied from exp-04/final"}
+  measurements:
+    - {metric: accuracy, value: 0.734, n: 500, path: /home/ben/task/eval/exp-07_soup_dev500.json, delta_vs_comparator: -0.002}
+  diagnostic_result:
+    value: 0.978
+    path: /home/ben/task/analysis/exp-07_soup_dev500.json
+    notes: "clean-stop rate 0.994 (exp-04) -> 0.978; non-terminating items 3 -> 10. The average is genuinely better at the content it finishes (clean-stop errors 129 -> 123) and loses exactly that much to new repetition loops, so the two effects cancel."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-500 0.736 -> 0.734 (-0.2, stderr 0.020): the soup is indistinguishable from exp-04. The noise-cancelling effect showed up where predicted -- six fewer wrong-but-well-formed answers -- but it was paid for by seven extra non-terminating completions, so the total does not move."
+  decision: reject
+  next_step: "Ship exp-04 as final_model (already installed and verified). With 1.8 h left and three lever families exhausted (external data saturated at exp-06, decode already greedy, weight averaging flat), the remaining budget goes to verifying final_model under the grader's own default command rather than to another gamble."

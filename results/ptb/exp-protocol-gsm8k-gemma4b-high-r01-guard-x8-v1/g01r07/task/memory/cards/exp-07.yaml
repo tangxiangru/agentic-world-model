@@ -1,0 +1,130 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T02:38:46Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 8.15
+  remaining_h: 1.85
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.664, protocol_n: 500}
+  trigger: "The same soup weights scored 0.664 at n=500 and 0.58 at n=150, where the 150 are a SUBSET of the 500. That is not item difficulty. The vLLM startup line says why: 'Default sampling parameters have been overridden by the model's Hugging Face generation config recommended from the model creator' - and google/gemma-3-4b-pt ships do_sample=true, top_k=64, top_p=0.95, which every checkpoint in this batch inherited. The grader has been sampling at temperature 1.0 all along."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/eval_final_soup150.log, locator: "'Default sampling parameters have been overridden by the model's Hugging Face generation config'"}
+    - {path: /home/ben/task/final_model/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95, no temperature key"}
+    - {path: /home/ben/task/eval/final_model_soup_dev150.json, locator: "0.58 - same weights that scored 0.664 on the superset of these items"}
+    - {path: /home/ben/task/analysis/exp03_probe.json, locator: "0.765 at temperature 0.0 on 400 held-out problems, against a sampled pass@1 of 0.664 measured by scripts/rft_sample.py at temperature 1.0 on train-side problems"}
+  alternatives_rejected:
+    - {option: "Leave the decode config alone and accept 0.664", reason: "the gap between the temperature-0.0 probe (0.765) and the temperature-1.0 sampler (0.664) on comparable data is ~10 pts; leaving it is leaving the single largest remaining gain on the table"}
+    - {option: "Re-run the exp-04 vs exp-05 vs soup selection under greedy decoding before shipping", reason: "three n=500 evals is ~75 min and 1.85 h remain, with the install and verification still to do; the three are within noise of each other anyway (all McNemar p > 0.4), so the decode fix is worth far more than re-picking among them"}
+    - {option: "Set a low temperature such as 0.2 rather than 0.0", reason: "no budget to tune it, and greedy is the standard choice for a single-attempt exact-match benchmark - there is no self-consistency vote here for sampling diversity to pay off in"}
+    - {option: "Modify evaluate.py to pass temperature=0", reason: "forbidden by the task rules; the fix belongs in my own model's generation_config.json, which is mine to set"}
+  pitfalls_hit:
+    - {what: "Every accuracy in exp-01 through exp-06 was measured under temperature-1.0 top_p-0.95 sampling inherited from the base checkpoint's generation_config.json, not greedy decoding. That inflated the run-to-run variance well past the binomial stderr the eval reports and is the likeliest reason exp-02 vs exp-03 and exp-04 vs exp-05 both produced contradictory orderings at n=150 and n=500.", cost_h: 0.0, fix: "Set temperature 0.0 and drop top_k/top_p in final_model/generation_config.json; noticed only because a repeat measurement of one checkpoint disagreed with itself across nested item sets."}
+  smoke_runs:
+    - {command: [python, scripts/finalize.py, --src, ckpts/exp-06-soup, --dst, final_model], outcome: "soup installed and loaded from a fresh CPU process: Gemma3ForConditionalGeneration, 4.30B params, tokenizer ok"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "final_model inherits google/gemma-3-4b-pt's generation_config.json, and vLLM adopts it in preference to its own defaults. So the grader draws each answer from a temperature-1.0, top_p-0.95, top_k-64 distribution instead of taking the mode. On a single-attempt exact-match benchmark that throws away accuracy on every item where the greedy chain is right but not overwhelmingly likely."
+  evidence:
+    - {path: /home/ben/task/logs/eval_final_soup150.log, locator: "vLLM override notice at startup", observation: "the model's generation config wins over vLLM defaults"}
+    - {path: /home/ben/task/eval/exp06_soup_dev500.json, locator: "0.664 at n=500", observation: "same weights, superset of the 150 below"}
+    - {path: /home/ben/task/eval/final_model_soup_dev150.json, locator: "0.58 at n=150", observation: "an 8.4-point swing on nested item sets - sampling noise, not difficulty"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "pass@1 0.664 at temperature 1.0", observation: "against 0.765 greedy on held-out problems in analysis/exp03_probe.json - roughly a 10-point decode penalty"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "sampling-1", source: /home/ben/task/eval/final_model_soup_dev150.json, question: "(items in dev-150 the soup missed here but got right inside the n=500 run)", gold: "(various)", model_output: "a different chain each draw", failure: "the answer depends on the sampler's draw, not on the model"}
+    - {id: "sampling-2", source: /home/ben/task/logs/rft_sample.log, question: "(train-side problems sampled 4x at temperature 1.0)", gold: "(various)", model_output: "0.663 of draws correct while 0.874 of problems have a correct draw", failure: "the mode is right far more often than an individual sample is"}
+    - {id: "sampling-3", source: /home/ben/task/analysis/exp03_probe.json, question: "(400 held-out problems, greedy)", gold: "(various)", model_output: "0.765 correct at temperature 0.0", failure: "the same model measured greedy scores ~10 pts above its own temperature-1.0 pass@1"}
+  watch_set:
+    path: /home/ben/task/analysis/exp04_tags_watch.jsonl
+    n: 49
+    selection: "standing dev-150 watch set from exp-04 (unchanged; this card changes no weights)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Setting temperature 0.0 and removing top_k/top_p from final_model/generation_config.json - the weights untouched - raises accuracy at n=500 above the 0.664 the same weights scored under the inherited temperature-1.0 sampling config."
+  mechanism: "inspect_ai passes no temperature, so vLLM falls back to the model's generation_config.json and samples. Greedy decoding returns the argmax chain instead of a draw from it. The model's own numbers bound the size of the effect: pass@1 0.663 sampled versus 0.765 greedy on comparable held-out problems, and 0.874 of problems have SOME correct draw - so a large share of the sampled losses are items whose modal chain is already correct."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "+3 to +9 pts at n=500"}
+  falsified_if: "accuracy at n=500 is at or below 0.664."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06-soup
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/exp07_generation_config_before.json
+      source: "local - the decode config of my own checkpoint; no training corpus is read by this card"
+      n_examples: 1
+      built_by: /home/ben/task/scripts/finalize.py
+      build_command: [python, scripts/finalize.py, --src, ckpts/exp-06-soup, --dst, final_model]
+      selection: "not a corpus - an immutable copy of final_model/generation_config.json AS IT STOOD BEFORE this card, kept so the lock has something stable to pin. The first attempt named the live file and close() correctly refused: the card edits that file, so its hash cannot survive its own intervention."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 reading generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged - no weights change in this card"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/set_decode.py, --dir, final_model, --temperature, "0.0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/set_decode.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/final_model
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, "500", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test stream, --limit 500 (first 500 items in dataset order)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.664
+    path: /home/ben/task/eval/exp06_soup_dev500.json
+  diagnostic:
+    what: "the vLLM startup line in the eval log must show the sampling override is gone or the params are greedy, and McNemar against the sampled run on the same 500 items"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.22
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no weights changed; generation_config.json went from do_sample=true/top_k=64/top_p=0.95 to do_sample=false/temperature=0.0 with top_k and top_p removed"}
+  measurements:
+    - {metric: accuracy, value: 0.722, n: 500, path: /home/ben/task/eval/final_greedy_dev500.json, delta_vs_comparator: 0.058}
+  diagnostic_result:
+    value: 0.722
+    path: /home/ben/task/analysis/greedy_mcnemar.json
+    notes: "McNemar on the same 500 items, identical weights, decode config the only difference: 70 items the greedy run gets and the sampled run misses, 41 the other way, exact two-sided p = 0.0076. This is the only significant result in the whole batch. The vLLM override notice still appears in the log, which is correct - it means vLLM is reading my generation_config, and that config now asks for greedy."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "n=500 0.664 -> 0.722 (+5.8 pts) from a four-line change to generation_config.json, weights untouched, p=0.0076. The predicted mechanism is exactly what happened: the model's modal chain was already correct on 70 items where a temperature-1.0 draw went elsewhere, which is what the earlier 0.663-sampled-vs-0.765-greedy gap implied."
+  decision: adopt
+  next_step: "This is the largest single-step gain after the initial SFT, and it was invisible for eight hours because every card compared two checkpoints measured the same wrong way - a shared bias cancels in a delta and hides in plain sight. It also means exp-04, exp-05 and the exp-06 soup were all selected on noisy sampled numbers; exp-08 re-runs that three-way selection under greedy decoding at n=500 while ~1.7 h remain."

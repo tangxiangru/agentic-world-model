@@ -1,0 +1,142 @@
+# Experiment card (awm-experiment-card-v2)
+#
+# One card = one experiment: one situation, one problem, one hypothesis, one
+# intervention, one result. Sections 0-4 before the launch command runs;
+# 5-6 after. `awm exp_protocol lock` pins 0-4; `close` re-checks them.
+#
+# Required before lock: situation.elapsed_h, situation.trigger, problem.statement,
+# hypothesis.claim, setup.parent_checkpoint.{path,origin}, setup.data (>=1 with
+# path/source/n_examples), setup.method.family, setup.command.{argv,cwd},
+# setup.output_dir, setup.checkpoints.keep, evaluation.protocol.n; and for a
+# training family (sft/rft/dpo/grpo/distill): setup.method.stop_token and
+# setup.method.hyperparams.max_seq_len.
+# Everything else is optional; what you give is checked.
+#
+# Paths are absolute, inside {dir}. Commands are the exact argv that was run.
+# Unknown is `null`, never a guess.
+
+schema_version: awm-experiment-card-v2
+card_id: exp-<NN>                      # sequential within this session
+created_at: <ISO-8601>
+
+# ---- 0. Situation (before) -------------------------------------------------
+# The state you were in when you decided to do this. Not what you did — why now.
+situation:
+  elapsed_h: <float>                   # hours into the run (bash timer.sh)
+  remaining_h: <float|null>
+  incumbent:                           # the best thing you have right now
+    ref: base_model | exp-<NN>
+    path: <abs path | HF id>
+    score: {metric: accuracy, value: <float|null>, protocol_n: <int|null>}
+  trigger: <one line - the observation that led to this experiment>
+  trigger_evidence:
+    - {path: <abs path>, locator: <line range | item ids>}
+  alternatives_rejected:               # what else you considered, and why not
+    - {option: <one line>, reason: <one line>}
+  pitfalls_hit:                        # trouble before this launch: smoke failures, OOM, wrong paths
+    - {what: <one line>, cost_h: <float|null>, fix: <one line|null>}
+  smoke_runs:                          # retrospective record, not a lock exemption
+    # Training/evaluation smokes need a matching card locked BEFORE execution.
+    # CPU-only preparation is distinct; see SKILL.md rule 1.
+    - {command: [<argv>], outcome: <one line>}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: <what is going wrong, concretely>
+  evidence:                            # where you saw it; each entry points at a real file
+    - {path: <abs path>, locator: <line range | item ids>, observation: <one line>}
+  affected_share: <float|null>         # fraction of failures this problem accounts for, if measured
+  failure_examples:                    # 3-10 items the model gets wrong, from YOUR dev/probe sets
+    - {id: <item id>, source: <abs path>, question: <text>, gold: <text>, model_output: <text>, failure: <one line>}
+  watch_set:                           # the items to re-check after the experiment
+    path: <abs path>                   # jsonl of {id, question, gold}
+    n: <int>
+    selection: <how they were chosen>
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: <intervention X will change metric M on the problem above>   # not a target
+  mechanism: <why it should work>
+  expected_effect:
+    metric: <accuracy | ...>
+    direction: higher | lower
+    against: <exp-NN | base_model | incumbent>
+    magnitude: <string|null>
+  falsified_if: <observable outcome that would contradict the claim>
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: <abs path | HF id>
+    origin: base_model | exp-<NN>      # what produced it
+    hash: <string|null>
+  base_model: <HF id>
+  data:   # required when family trains on target text (sft/rft/dpo/grpo/distill); [] for decode-config, merge and eval-only cards
+    - path: <abs path>                 # the exact file the trainer reads
+      source: <HF id | synthetic:self | synthetic:<model> | derived:exp-<NN> | local>
+      n_examples: <int>
+      built_by: <abs path | null>
+      build_command: [<argv>]
+      selection: <filter / dedup / formatting rule>
+      contamination_check: passed | failed | not_run
+      mixture_weight: <float>
+  method:
+    family: sft | rft | dpo | grpo | distill | merge | decode-config | other
+    framework: <string>
+    peft: <"none" | "LoRA r=.. alpha=.. targets=..">
+    hyperparams: {lr: <float>, epochs: <float>, batch_size: <int>, grad_accum: <int>, max_seq_len: <int>, scheduler: <string>, warmup: <float>, weight_decay: <float>, precision: <string>, seed: <int>}
+    target_format: <how the training target is shaped for the grader>
+    stop_token: <the terminator the grading template stops on, e.g. "<|im_end|>">   # preflight checks the data against it
+    answer_marker: <the marker the grader reads, e.g. "#### ">                    # preflight checks it appears exactly once
+  command:
+    argv: [<exact command as run>]
+    cwd: <abs path>
+    script: <abs path to the training script>   # lock hashes it
+    env: {}                            # only vars that change the result
+    log: <abs path>
+  output_dir: <abs path>               # where checkpoint-<step>/ land
+  # execution: {output_evidence: fresh-directory}  # optional; read execution-records.md
+  checkpoints:
+    every_steps: <int|null>
+    keep: all | last | best | <int>    # a promise to later cards
+  budget: {gpu: <string>, planned_h: <float>}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [<argv>]
+    dev_set: <abs path | "official --limit N">
+    n: <int>
+    seed: <int|null>
+  comparator:
+    ref: <exp-NN | base_model>
+    value: <float|null>                # measured under the SAME protocol...
+    path: <abs path|null>              # ...and here is that eval's output
+    # defer_validation: true           # optional; read deferred-comparator.md first
+  diagnostic:                          # optional: a probe of the mechanism, not the score
+    what: <string|null>
+    n: <int|null>
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed | failed | killed | not_run
+  wall_h: <float>
+  output_checkpoint: <abs path | null>
+  checkpoints_kept:                    # what setup.checkpoints promised, as kept
+    - {path: <abs path>, step: <int>}
+  training_summary: {final_loss: <float|null>, steps: <int|null>, notes: <string|null>}
+  measurements:
+    - {metric: accuracy, value: <float>, n: <int>, path: <abs path>, delta_vs_comparator: <float>}
+  diagnostic_result: {value: <float|null>, path: <abs path|null>, notes: <string|null>}
+  watch_set_result: {fixed: <int>, still_failing: <int>, regressions: <int|null>, path: <abs path>}
+  failure: <traceback tail | null>
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported | contradicted | inconclusive         # supported/contradicted need a measurement
+  mechanism_verdict: supported | contradicted | not_tested # only from `diagnostic`
+  summary: <two lines - what happened and what it says about the hypothesis>
+  decision: adopt | reject | iterate | abandon_line        # adopt needs output_checkpoint
+  next_step: <string|null>

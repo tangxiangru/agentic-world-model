@@ -1,0 +1,138 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T22:03:10Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.71, protocol_n: 200}
+  trigger: "exp-02 fixed the format problem completely (stop compliance 0.99, first-ANSWER-line accuracy 0.705 vs official 0.710) but 58 of 200 dev items are still wrong, and reading them shows plain reasoning errors: wrong equation setup, answering a sub-quantity instead of the asked one, and one repetition loop."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_report.json, locator: "accuracy=0.71, share_stopped_before_cap=0.99, first_ANSWER_line_accuracy=0.705"}
+    - {path: /home/ben/task/logs/2026-09-03T21-08-12+00-00_gsm8k_N629UecuQVug2tEPcRZTyx.json, locator: "58 samples with scores.match.value != C", observation: "e.g. a bees problem where the model sets up W=2B, B=2Q correctly then reports W instead of the asked quantity"}
+    - {path: /home/ben/task/analysis/rft_exp03_stats.json, locator: "solved_histogram", observation: "at k=4, temp 1.0 the exp-02 model solves 94.6% of 32473 training questions at least once but only 61% of them all four times - a large band of questions it can do but does unreliably"}
+  alternatives_rejected:
+    - {option: "Retrain from the base model on sft_v2 + RFT combined (classical RFT)", reason: "1 epoch over 154k rows is 1.7 h and 2 epochs is 3.4 h; continuing from exp-02 gets the same data in front of the model for half the wall-clock, and exp-02 is already a strong, measured incumbent to fall back on"}
+    - {option: "DPO on correct/incorrect sample pairs from the same generation run", reason: "the generation already produced both, but preference training on a 4B math model is far more sensitive to hyperparameters than SFT and there is no budget for a second attempt if the first one degrades"}
+    - {option: "Self-consistency / majority vote at eval time", reason: "the grader calls the model once per item; there is no way to vote without changing evaluate.py, which rule 5 forbids"}
+    - {option: "Train only on the 1746 questions the model never solved", reason: "no correct self-generated solutions exist for them by definition; they would need a teacher, and the OpenMathInstruct-2 teacher solutions for them are already in the replay slice"}
+  pitfalls_hit:
+    - {what: "vLLM's progress bar counts n*prompts, so the 32473-question run displayed as 129892 and looked 4x over-scoped for a minute", cost_h: 0.0, fix: "confirmed 129892 = 32473 x k=4; no change needed"}
+  smoke_runs:
+    - {command: [python, scripts/gen_rft.py, --model, /home/ben/task/ckpts/exp-02/final, --k, "4", --temperature, "1.0"], outcome: "129892 samples at ~7.9k output tok/s in 46 min; pass_rate 0.806; 59179 rows written"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft_v1_forcheck.jsonl], outcome: "79179 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, scripts/finalize.py, --src, /home/ben/task/ckpts/exp-02/final], outcome: "final_model/ already holds exp-02 and passes the CPU load + template + greedy-config check, so this card cannot lose the incumbent"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02 is unreliable rather than incapable: at temperature 1.0 it solves 94.6% of held-out-style training questions at least once in four tries, but gets all four right on only 61%. Under the grader's single greedy sample that unreliability shows up as 58/200 wrong, dominated by wrong equation setup and by answering a sub-quantity instead of the quantity asked."
+  evidence:
+    - {path: /home/ben/task/analysis/rft_exp03_stats.json, locator: "solved_histogram: 0->1746, 1->2156, 2->3050, 3->5661, 4->19860", observation: "10867 of 32473 questions (33%) are solved sometimes but not always - the band where sharpening can pay"}
+    - {path: /home/ben/task/analysis/exp-02_report.json, locator: "accuracy=0.71 vs share_stopped_before_cap=0.99", observation: "format is no longer costing anything; the residual is reasoning"}
+  affected_share: 0.33
+  failure_examples:
+    - {id: exp02-fail-bees, source: /home/ben/task/analysis/exp-02_failures.jsonl, question: "(text not reproduced - benchmark test item, rule 7)", gold: "(withheld)", model_output: "sets up W=2B and B=2Q, solves to Q=70, B=140, W=280, answers 280", failure: "solves the system correctly then reports the wrong variable"}
+    - {id: exp02-fail-hospital, source: /home/ben/task/analysis/exp-02_failures.jsonl, question: "(text not reproduced - benchmark test item, rule 7)", gold: "(withheld)", model_output: "'the number of patients seen per hour is 24 / 24 = 1'", failure: "invents a unit conversion that does not follow from the problem"}
+    - {id: exp02-fail-sauce, source: /home/ben/task/analysis/exp-02_failures.jsonl, question: "(text not reproduced - benchmark test item, rule 7)", gold: "(withheld)", model_output: "repeats 'the amount of sauce made from a can of tomatoes is 3/2 times the volume of the can' four times, then runs to the token cap", failure: "repetition loop; one of only 2 completions in 200 that never stopped"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_failures.jsonl
+    n: 58
+    selection: "the item ids of every dev-200 item exp-02 got wrong; ids only, no benchmark text stored (rule 7)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing training from exp-02 on 59.2k of its own verified-correct solutions (rejection-sampled at k=4, temperature 1.0, kept only when the final ANSWER matches the reference) plus a 20k replay slice of unseen OpenMathInstruct-2 solutions raises GSM8K accuracy at n=200 above exp-02's 0.710."
+  mechanism: "Rejection sampling reweights the model's own output distribution towards the reasoning paths that actually reach the right answer, which is exactly the sometimes-right band the solved_histogram shows is 33% of questions; the 4->1 hard-question bonus puts extra weight on the questions it solves only once in four. The replay slice keeps a stronger teacher's solutions in the mixture so the model is not only fitting its own habits."
+  mechanism_note: "The diagnostic that distinguishes sharpening from mere memorisation is the pass rate of a fresh k=4 sample after training - not measured in this card for budget reasons, so mechanism_verdict will be not_tested unless the watch-set split is decisive."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points at n=200"
+  falsified_if: "accuracy at n=200 is at or below exp-02's 0.710, or fewer than 10 of the 58 watch-set items are fixed"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "synthetic:self (exp-02 samples on openai/gsm8k main/train questions and nvidia/OpenMathInstruct-2 augmented_gsm8k questions) + derived:exp-02 replay slice of nvidia/OpenMathInstruct-2 @469216e3f46f4dacf476b382e192485ea51a143e"
+      n_examples: 79179
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, scripts/gen_rft.py, --model, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/data/rft_exp03_raw.jsonl, --n-omi2, "25000", --k, "4", --temperature, "1.0", --max-tokens, "640"]
+      selection: "keep a sample only when the number on its final 'ANSWER:' line equals the reference answer; dedup exact duplicates; cap 2 kept samples per question, raised to 4 for questions solved by only 1 of 4 samples; then mix with 20000 OpenMathInstruct-2 rows whose solution text does not appear in sft_v2 (assembled by scripts/mix_rft.py); 6334 rows (8%) get a k in {1,2,4} few-shot prefix as in exp-02"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "vllm 0.11.0 for sampling; transformers 4.57.3 Trainer + liger-kernel 0.8.2 for training"
+    peft: "none (full fine-tune of the 3.88B text tower; vision tower and projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 2, batch_size: 32, grad_accum: 4, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit, beta2=0.95", seed: 1}
+    target_format: "identical to exp-02: <bos><start_of_turn>user\\n{grader prompt}<end_of_turn>\\n<start_of_turn>model\\n{CoT}\\n\\nANSWER: {N}<end_of_turn>\\n, loss on the model turn only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, /home/ben/task/data/rft_v1.jsonl, --out, /home/ben/task/ckpts/exp-03, --max-seq-len, "2048", --lr, "7e-6", --epochs, "2", --bs, "32", --grad-accum, "4", --save-steps, "620", --seed, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-03_train.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 620
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "200", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 200 (first 200 items of openai/gsm8k main test in inspect-ai's default order)"
+    n: 200
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.71
+    path: /home/ben/task/eval/exp-02_n200.json
+  diagnostic:
+    what: "share of completions that stop before the 4000-token cap - must not regress below exp-02's 0.99 (the repetition-loop failure mode should not grow)"
+    n: 200
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: failed
+  wall_h: 0.85
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: 620, notes: "reached step 620 of 1238 (1.0 epoch) in 50 min, then died in the first checkpoint save; no weights were written because save_pretrained writes config.json before the state dict"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: |
+    File "transformers/generation/configuration_utils.py", line 725, in save_pretrained
+      raise ValueError(str(exc) + "\n\nFix these issues to save the configuration.")
+    ValueError: GenerationConfig is invalid:
+    - `temperature`: `do_sample` is set to `False`. However, `temperature` is set to `0.0` --
+      this flag is only used in sample-based generation modes.
+    Cause: exp-02's checkpoint carries the greedy generation_config this project writes for
+    vLLM (temperature 0.0, do_sample False). Training FROM that checkpoint loads it into
+    model.generation_config, and HF refuses to serialise it, so every mid-run save aborts
+    the run. exp-02 never hit this because it started from the stock base checkpoint.
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "The RFT hypothesis was never tested: the run died at step 620 of 1238 in its first checkpoint save, 50 minutes in, because the greedy generation_config this project writes for vLLM is not a config HF will serialise. Nothing about rejection sampling is confirmed or refuted."
+  decision: iterate
+  next_step: "exp-04: same data and parent, with model.generation_config neutralised after load (temperature 1.0, do_sample False) and the greedy config rewritten only at the end; epochs cut 2 -> 1.5 to pay back the 50 minutes lost."

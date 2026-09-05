@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T16:39:01Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 4.25
+  remaining_h: 5.75
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03_greedy
+    score: {metric: accuracy, value: 0.7533, protocol_n: 150}
+  trigger: "exp-04 showed the model is not policy-limited: re-weighting towards its own verified correct chains moved dev-150 by -0.7 points. The other explanation for the 37 remaining failures is that one epoch over 127k rows is simply not enough supervision, which is testable with the 135k fresh OpenMathInstruct-2 rows already built and contamination-checked."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.measurements: 0.7467 vs comparator 0.7533", observation: "RFT bought nothing; the on-policy explanation is spent"}
+    - {path: /home/ben/task/logs/contam_v2.log, locator: "summary box", observation: "135000 documents scanned, 0 contaminated - sft_v2 is ready to train on"}
+  alternatives_rejected:
+    - {option: "Retrain from the base snapshot on sft_v1 + sft_v2 together (262k rows)", reason: "113M tokens is ~3.8h at the measured 8.2k tokens/s and only ~5.7h remain; it would leave no time to evaluate, choose and verify final_model"}
+    - {option: "A second epoch over sft_v1", reason: "re-reading the same 127k solutions tests memorisation, not supervision volume; sft_v2 shares no solution string with sft_v1 (0 exact duplicates measured)"}
+    - {option: "DPO on the exp-04 sampling pairs", reason: "a new method with new failure modes and ~2h of setup+train+eval, against a data-scaling run whose machinery is already validated by exp-02"}
+    - {option: "Continue at lr 2e-5 as in exp-02", reason: "exp-02's cosine schedule already annealed to zero; restarting a continuation at the original peak risks knocking the model off the format behaviour that is worth 52 points"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/contam_input_v2.jsonl], outcome: "135000 documents scanned, 0 contaminated, 0 matches"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "37 of 150 dev items still fail, all of them by setting up the word problem wrongly rather than by formatting or arithmetic slips, and the on-policy fix (exp-04) did not help. If the cause is insufficient supervision, more distinct worked solutions should move it; if it is a capability ceiling of a 4B model at one epoch, nothing here will."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev150_diag.json, locator: "37 items with correct=false", observation: "all well-formed; failures are problem-setup errors"}
+    - {path: /home/ben/task/analysis/exp-04_dev150_diag.json, locator: "metrics.accuracy=0.7467", observation: "rejection-sampling fine-tuning on 30k verified self-samples changed nothing"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "greedy-fail-1", source: /home/ben/task/eval/exp-03_greedy_dev150_log.json, question: "(gsm8k test item, bees - text not copied, protocol rule 7)", gold: "400", model_output: "...worker bees is 2*280 = 560 ... ANSWER: 560", failure: "answers a different quantity than the one asked"}
+    - {id: "greedy-fail-2", source: /home/ben/task/eval/exp-03_greedy_dev150_log.json, question: "(gsm8k test item, hospital profit)", gold: "10000", model_output: "...100000 - 30000 = 70000 ... ANSWER: 70000", failure: "wrong revenue term"}
+    - {id: "greedy-fail-3", source: /home/ben/task/eval/exp-03_greedy_dev150_log.json, question: "(gsm8k test item, dog food bags)", gold: "5", model_output: "2 bags + 7 bags = 9 bags ... ANSWER: 9", failure: "double-counts a period of the timeline"}
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Continuing from exp-02 for one epoch over 135k fresh OpenMathInstruct-2 rows (sft_v2, no solution shared with sft_v1) at lr 1e-5 raises greedy dev-150 accuracy above exp-03's 0.7533."
+  mechanism: "Doubling the number of distinct worked gsm8k-style solutions the model has seen gives it more coverage of problem *setups* - the step it gets wrong - rather than more of the answer formatting it has already mastered."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +6 points"}
+  falsified_if: "greedy dev-150 accuracy is at or below 0.7533, which would say the remaining failures are not supervision-volume-limited and that further OpenMathInstruct-2 data is not the lever"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2_dedup.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, shards 6-13"
+      n_examples: 135000
+      built_by: /home/ben/task/scripts/build_data_v2.py
+      build_command: [python, scripts/build_data_v2.py, --out, data/sft_v2.jsonl, --shard-start, '6', --shard-end, '14', --n-aug-gsm8k, '105000', --n-gsm8k, '12000', --n-math, '18000', --max-per-problem, '4', --no-gold, --fewshot-frac, '0.10', --seed, '1']
+      selection: "same filters as sft_v1 (numeric expected_answer, \\boxed unwrapped, trailing 'The answer is' stripped, one 'ANSWER: n' line, <= 2600 chars) over shards 6-13 with up to 4 solutions per problem; then deduplicated against sft_v1 on (question, completion) - 0 collisions. 10% of rows carry a k-shot prefix from gsm8k train. Composition: augmented_gsm8k 105000, gsm8k 12000, math 9000, augmented_math 9000."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, token-budget batch sampler, flash_attention_2. After training, ckpts/exp-05/final/generation_config.json is patched to do_sample=false / temperature=0 (adopted in exp-03) before evaluation, so candidate and comparator decode identically."
+    peft: "none (full fine-tune of the 3.88B text stack; SigLIP vision tower and projector stay frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 8192, grad_accum: 8, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, adamw_bnb_8bit", seed: 0}
+    target_format: "chain of thought, blank line, 'ANSWER: <n>', then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v2_dedup.jsonl, --out, /home/ben/task/ckpts/exp-05, --model, /home/ben/task/ckpts/exp-02/final, --precision, mixed, --token-budget, '8192', --grad-accum, '8', --lr, '1e-5', --epochs, '1', --max-seq-len, '2816', --save-steps, '300']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: 300
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.1}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7533
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "number of the 37 exp-03 failures that flip to correct, and the number of exp-03 successes that flip to wrong (n=150 alone cannot separate a 2-point move from noise)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.93
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 942}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-942, step: 942}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-900, step: 900}
+  training_summary: {final_loss: 0.2639, steps: 942, notes: "train_loss 0.2808 over 59.0M tokens; 3 of 135000 rows dropped for exceeding max_seq_len 2816"}
+  measurements:
+    - {metric: accuracy, value: 0.7933, n: 150, path: /home/ben/task/eval/exp-05_dev150.json, delta_vs_comparator: 0.04}
+  diagnostic_result:
+    value: 13
+    path: /home/ben/task/analysis/exp-05_flips.json
+    notes: "13 of exp-03's 37 failures flip to correct against 7 new regressions (net +6 items = +4.0 points). 149/150 still terminate; median completion 431 -> 449 chars, so no style collapse."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy dev-150 0.7533 -> 0.7933 (+4.0 points, ~1.2 stderr of the difference). 13 previously failed items are now solved against 7 regressions, so the effect is a real net gain in problem-setup competence rather than a reshuffle."
+  decision: adopt
+  next_step: "The supervision-volume lever is still paying: exp-06 repeats it with a third disjoint OpenMathInstruct-2 slice (shards 14-21), sized to finish inside the remaining budget."

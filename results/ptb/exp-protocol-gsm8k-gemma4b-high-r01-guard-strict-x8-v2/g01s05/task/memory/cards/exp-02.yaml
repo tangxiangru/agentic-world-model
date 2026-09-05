@@ -1,0 +1,169 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T12:20:00Z'
+situation:
+  elapsed_h: 2.3
+  remaining_h: 7.7
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/ckpts/exp-01/final
+    score:
+      metric: accuracy
+      value: 0.6533
+      protocol_n: 150
+  trigger: >-
+    evaluate.py never sets a temperature, so the inspect vLLM provider omits it from the
+    request and the server falls back to the model's own generation_config.json. exp-01
+    inherited the pt snapshot's file (do_sample true, top_k 64, top_p 0.95, no temperature
+    -> 1.0), so every scored answer so far was drawn from a temperature-1.0 sample.
+  trigger_evidence:
+    - path: /home/ben/task/logs/eval_base.log
+      locator: >-
+        "Default sampling parameters have been overridden by the model's Hugging Face
+        generation config recommended from the model creator."
+    - path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py
+      locator: ModelConfig.get_diff_sampling_param (generation_config defaults to "auto")
+    - path: /home/ben/task/ckpts/exp-01/final/generation_config.json
+      locator: 'do_sample true, top_k 64, top_p 0.95'
+  alternatives_rejected:
+    - option: Set the temperature in evaluate.py
+      reason: evaluate.py may not be modified. generation_config.json is part of the model
+        I ship, not part of the harness, so that is the knob I actually own.
+    - option: Self-consistency / majority vote over k samples
+      reason: The harness scores one completion per item; there is no place to aggregate
+        votes without changing evaluate.py.
+    - option: Skip this and go straight to more training
+      reason: It costs one 10-minute eval and applies to every later checkpoint, so it
+        is worth resolving before spending hours of GPU on the next training run.
+  pitfalls_hit:
+    - what: 'cp -al hardlinked the checkpoint into final_greedy, so rewriting generation_config.json
+        in place would have silently changed the exp-01 checkpoint too.'
+      cost_h: 0.05
+      fix: rm the hardlinked file first, then write the new one; verified both files differ
+        afterwards.
+  smoke_runs: []
+problem:
+  statement: >-
+    GSM8K has one correct answer per item and the grader reads a single completion. Under
+    the inherited sampling config the model draws from a temperature-1.0, top_k-64
+    distribution, so on any item where the model's chain is not confident the sampled
+    token sequence can wander into a wrong arithmetic step that greedy decoding would
+    not have taken. This is variance the task does not reward.
+  evidence:
+    - path: /home/ben/task/eval/exp01_dev150.json
+      locator: accuracy
+      observation: 0.6533 at stderr 0.039, measured under temperature-1.0 sampling
+    - path: /home/ben/task/analysis/exp01_format.json
+      locator: bad_examples, chars_max
+      observation: one completion ran to 15224 chars, the signature of a sampled chain
+        losing the thread rather than a formatting failure
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: >-
+    Shipping a generation_config.json with temperature 0 (greedy) instead of the pt
+    snapshot's sampling defaults raises dev-150 accuracy for the same exp-01 weights.
+  mechanism: >-
+    With no aggregation over samples, the highest-probability chain is the best single
+    guess the model can offer; temperature-1.0 sampling can only move probability mass
+    off it. Greedy also removes the long-tail runaway generations.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: +2 to +8 points on dev-150
+  falsified_if: dev-150 accuracy under greedy is at or below exp-01's 0.6533.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-01/final
+    origin: exp-01
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix.jsonl
+      source: 'unchanged from exp-01: no training happens in this card'
+      n_examples: 59933
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py]
+      selection: not re-derived; listed only to record the provenance of the weights being
+        re-decoded
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: decode-config
+    framework: vLLM 0.11.0 default sampling params read from generation_config.json
+    peft: none
+    hyperparams: {}
+    target_format: unchanged from exp-01
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/make_model_dir.py, --src, ckpts/exp-01/final, --dst, ckpts/exp-01/final_greedy,
+      --decode, greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/make_model_dir.py
+    env:
+      HF_HOME: /home/ben/hf_cache
+    log: /home/ben/task/logs/eval_exp02.log
+  output_dir: /home/ben/task/ckpts/exp-01/final_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.2
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections,
+      '32', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.6533
+    path: /home/ben/task/eval/exp01_dev150.json
+  diagnostic:
+    what: 'share of completions ending in a well-formed "ANSWER: <number>" line, and the
+      longest completion (runaway generations should disappear under greedy)'
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-01/final_greedy
+  checkpoints_kept:
+    - path: /home/ben/task/ckpts/exp-01/final_greedy
+      step: 3746
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: no training; identical weights to exp-01, hardlinked, with a rewritten generation_config.json
+  measurements:
+    - metric: accuracy
+      value: 0.72
+      n: 150
+      path: /home/ben/task/eval/exp02_greedy_dev150.json
+      delta_vs_comparator: 0.0667
+  diagnostic_result:
+    value: 0.9733
+    path: /home/ben/task/analysis/exp02_format.json
+    notes: 'format compliance 0.987 -> 0.973 and the longest completion grew from 15224
+      to 16441 chars, i.e. greedy did NOT remove the runaway generations - it produced one
+      more of them (4 malformed vs 2). The accuracy gain therefore comes from better token
+      choices inside normal-length chains, not from fixing the tail.'
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: contradicted
+  summary: 'Same weights, temperature 0 instead of the pt snapshot''s top_k=64/top_p=0.95/temp=1.0:
+    dev-150 0.653 -> 0.720 (+6.7), which is 1.7 combined standard errors. The half of the
+    mechanism about removing runaway generations is wrong - greedy produced slightly more
+    degenerate loops (4 vs 2 malformed); the gain is from picking the modal chain.'
+  decision: adopt
+  next_step: 'Ship every later checkpoint with the greedy generation_config.json (scripts/make_model_dir.py
+    --decode greedy). Next lever: rejection-sampling fine-tuning, now that the model produces
+    usable chains.'

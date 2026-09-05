@@ -1,5 +1,14 @@
 # Experiment operations memory
 
+- `skills/exp_protocol/` is runtime guidance for scientist agents that actually train or
+  evaluate models inside PTB. It is not the workflow for planner, operator, reviewer, or ordinary
+  repository code changes. Before a PTB scientist takes any exploratory or implementation action,
+  the scaffold must make it explicitly invoke/read `exp_protocol`; no training or evaluation
+  command may run before that scientist creates, checks, and locks its experiment card.
+- The active main development and integration branch is `gangda-dev`. Treat
+  `gangda_trial_0828` references in existing manifests, specs, receipts, and job names as frozen
+  historical provenance; use `gangda-dev` for new development integration and PR targets unless
+  the user explicitly names another branch.
 - Keep expensive accelerators fed asynchronously. Once a downstream batch is independently
   specified, validated, and safe to run, submit it to the scheduler immediately; do not wait for
   the final long-tail job merely to make the submission synchronous.
@@ -8,13 +17,44 @@
   the next batch. If it is genuinely required, prepare and queue every independent job first.
 - Treat queued jobs as useful work: they may start on currently free GPUs and naturally backfill
   as allocations become available.
+- For `gangda_exp-protocol-evolve`, maintain a floor of eight independently specified, validated
+  cells as Slurm `PENDING(JobHeldUser)`, not ordinary runnable pending jobs. An ownership failure
+  never releases them. Release requires `OWNERSHIP OK`, a per-job `ReqNodeList` match to the frozen
+  receipt, and restored native two-node isolation; replenish the held buffer before it falls below
+  eight whenever scientifically valid downstream work is available.
+- Harvest every spillover job even when it is failed, cancelled, timed out, or otherwise terminated
+  incorrectly. Placement-only validator-complete results are sensitivity evidence, never primary;
+  incomplete attempts remain failed/truncated evidence. Requeue with a new immutable manifest and
+  receipt when required for two valid repeats, a matched-arm comparison, or a strict-site promotion
+  decision.
 - Never reclaim capacity by cancelling jobs outside the exact receipt/job IDs authorized for the
   current experiment.
+- For `exp_protocol` trace windows, do not wait for a Fable/GitHub reply. Once eight new
+  receipt-backed validator-clean cells have accumulated, invoke local Claude Code in the
+  background as `claude-opus-5[1m]` at `--effort max` (the installed CLI's mapping for the
+  user's "Opus 5 ultracode" request), following
+  `doc/reference/exp_protocol_local_claude_analysis.md`. Claude is a read-only analysis helper;
+  the Codex planner reads its reports and owns every experiment, protocol, queue, and git decision.
+- Keep the long-running Codex goal active and use `tools/exp_protocol_completion_monitor.py` as
+  the slow external-event detector, normally at a one-hour polling cadence so terminal attempts
+  accumulate into analysis batches. Its ready state is surfaced on resume/compaction by the
+  project SessionStart hook; Slurm terminal state only wakes the loop and never substitutes for
+  receipt-backed PTB validation.
+- After every `exp_protocol` analysis window, perform the full trace review and use additional
+  reviewer subagents when cross-cell ambiguity remains. Prune whole not-yet-started pending blocks
+  that the evidence makes scientifically unnecessary, but only through their immutable receipt job
+  IDs, never cancel running work, and preserve at least eight validated `PENDING(JobHeldUser)`
+  cells. Persist reusable loop knowledge in `skills/exp_protocol_meta/`, not only in chat or Claude
+  logs.
 - Use `/rmeng_data/robtang/slurm-queue/registry.json` as the cross-CLI ownership authority for the
   four H100 nodes. The shared queue name is `gangda`. A shared Unix user, `root`, reservation
   membership, or node placement is never
   sufficient ownership evidence. Query with `/rmeng_data/robtang/bin/awm-slurm-queue`; treat
   `OWNERSHIP FAIL` as an immediate investigation condition.
+- The `gangda` queue is hard-split into two non-borrowing 16-GPU subqueues:
+  `gangda_exp-protocol-evolve` owns `slurm2-a3nodesetondem-[0-1]`, and
+  `gangda_wma_evolve` owns `slurm2-a3nodesetondem-[2-3]`. New receipts inherit a subqueue from
+  their branch. Do not route a line onto the other subqueue's nodes.
 - Use the queue views according to their distinct purpose:
   - `gangda-slurm-queue` or `current --watch 5` shows only active and pending operations.
   - `gangda-slurm-queue failures` shows unresolved failures; `--include-resolved` is audit-only.

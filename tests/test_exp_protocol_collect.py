@@ -76,3 +76,18 @@ def test_relocks_overrides_and_unreadable_cards_are_counted(tmp_path) -> None:
     r = collect.collect([s])[0]
     assert r["n_cards"] == 1 and r["n_unreadable"] == 1
     assert r["n_relocked"] == 1 and r["n_overrides"] == 1
+
+
+
+def test_hours_used_comes_from_time_taken_beside_the_metrics(tmp_path) -> None:
+    """p00r05 stopped at 6.3 of 10 h; the card counts cannot show that, the hours can."""
+    s = tmp_path / "cell" / "task"
+    (s / "memory" / "cards").mkdir(parents=True)
+    (tmp_path / "cell" / "time_taken.txt").write_text("06:17:15\n")
+    assert collect.collect([s])[0]["hours_used"] == 6.29
+    (s / "time_taken.txt").write_text("00:36:14\n")  # the session's own copy wins
+    assert collect.collect([s])[0]["hours_used"] == 0.6
+    (s / "time_taken.txt").write_text("not a time\n")
+    (tmp_path / "cell" / "time_taken.txt").unlink()
+    assert collect.collect([s])[0]["hours_used"] == ""
+    assert "hours_used" in collect.to_csv(collect.collect([s])).splitlines()[0]

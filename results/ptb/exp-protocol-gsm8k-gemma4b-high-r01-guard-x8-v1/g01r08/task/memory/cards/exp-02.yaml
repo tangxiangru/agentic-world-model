@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T18:44:20Z'
+situation:
+  elapsed_h: 0.25
+  remaining_h: 9.75
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0733, protocol_n: 150}
+  trigger: "exp-01 measured the base checkpoint at 0.073 on n=150 and found 78% of completions never produce a well-formed 'ANSWER: <number>' final line (analysis/exp-01_format_fail.json): the dominant loss is format/over-continuation, not arithmetic."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_format_fail.json, locator: format_fail_share, observation: "0.78 of 150 completions do not end in a well-formed ANSWER line"}
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: accuracy, observation: "0.0733 +/- 0.0214"}
+  alternatives_rejected:
+    - {option: "Decode-config only (e.g. greedy generation_config.json)", reason: "cannot fix a base model that never stops after one answer; the harness prompt is fixed, so the format has to be trained in"}
+    - {option: "LoRA instead of full fine-tuning", reason: "4B fits a full FT on one H100 with adamw_8bit + gradient checkpointing (smoke: 1.5 s/step at effective batch 32, no OOM); full FT has the higher ceiling"}
+    - {option: "Add MetaMathQA / augmented_math to the mixture", reason: "GSM8K is grade-school word problems; an all-gsm8k-derived mixture keeps style on-domain. Held as a lever for a later card."}
+    - {option: "2 epochs in this card", reason: "measure one epoch first; a second epoch or a larger unique-problem pool is the next card's lever"}
+  pitfalls_hit:
+    - {what: "First data build kept only 515 of 153k OpenMathInstruct-2 rows - the cleaner rejected every solution whose answer was an inline \\boxed{} rather than a 'The final answer is ...' sentence", cost_h: 0.1, fix: "unwrap \\boxed{X} -> X, strip any trailing 'answer is ...' sentence, then append our own ANSWER line"}
+    - {what: "per_device_train_batch_size 32 OOMs - the 262k-vocab logits are ~22 GiB for one batch", cost_h: 0.05, fix: "batch 16 x grad_accum 2"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --limit-rows, '4000', --max-steps, '12', --bs, '16', --accum, '2'], outcome: "12 steps in 22 s (1.5 s/step, ~21 samples/s); template check passed; loss 0.44; only 0.025% of rows exceed max_seq_len 1024"}
+    - {command: [python, scripts/train_sft.py, --limit-rows, '8000', --max-steps, '10', --bs, '32', --accum, '1'], outcome: "CUDA OOM in cross_entropy (21.65 GiB allocation); batch 32 rejected"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_train_for_decon.jsonl], outcome: "127173 documents scanned, 0 contaminated, 0 matches"}
+problem:
+  statement: "The base model cannot produce the answer format the GSM8K grader reads. It continues past its own answer (inventing further questions, or looping on runaway decimals), and inspect_ai's match(location='end', numeric=True) scores the LAST number of the completion, so 78% of items are lost before arithmetic ability matters."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_format_fail.json, locator: "examples[0:10]", observation: "last lines are continuation text or truncated decimal loops, not 'ANSWER: N'"}
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: accuracy, observation: "0.0733 on n=150"}
+  affected_share: 0.78
+  failure_examples:
+    - {id: base-fmt-1, source: /home/ben/task/analysis/exp-01_format_fail.json, question: "A basket contains 150 oranges among which 1 is bad, 40% are unripe, 3 are sour and the rest are good. How many oranges are good?", gold: "n/a - only the completion tail was inspected", model_output: "restates the prompt and continues with a new problem instead of answering", failure: "over-continuation: no ANSWER line"}
+    - {id: base-fmt-2, source: /home/ben/task/analysis/exp-01_format_fail.json, question: "apples word problem (second item of the fail list)", gold: "n/a", model_output: "1.3681418803027870476 / 1.1333333333333333333 = ... The total number of apples is 1.06206", failure: "runaway decimal loop until max_tokens; no ANSWER line"}
+    - {id: base-fmt-3, source: /home/ben/task/analysis/exp-01_format_fail.json, question: "see analysis file, examples[2]", gold: "n/a", model_output: "continues into a freshly invented question/answer pair", failure: "the grader reads the last number, which belongs to the invented follow-up problem"}
+  watch_set:
+    path: /home/ben/task/data/dev_train300.jsonl
+    n: 300
+    selection: "last 300 rows of the GSM8K TRAIN split, excluded from every training file by question text (prep_data.py); never from the test copy"
+hypothesis:
+  claim: "Completion-only SFT on 127k GSM8K-train-derived step-by-step solutions, rendered in the grader's exact prompt template with every target ending 'ANSWER: <number>' + <end_of_turn>, raises GSM8K n=150 accuracy far above the base model's 0.073."
+  mechanism: "Two effects stack: the model learns to stop after one answer in the graded format, removing the 78% format loss; and 127k worked solutions in the same domain sharpen multi-step grade-school arithmetic itself."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+50 points or more (0.073 -> 0.6-0.8)"}
+  falsified_if: "n=150 accuracy stays below 0.35, or the format-fail share stays above 0.15"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_train.jsonl
+      source: "nvidia/OpenMathInstruct-2 (split train_1M, problem_source in {gsm8k, augmented_gsm8k}) + openai/gsm8k train split"
+      n_examples: 127173
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py, --out, data/sft_train.jsonl, --n-omi, '120000']
+      selection: "120000 OpenMathInstruct-2 rows (max 2 solutions per problem, <=2400 chars, numeric answers only, \\boxed unwrapped and the dataset's own answer sentence stripped) + all 7173 gsm8k train gold solutions with <<..>> annotations removed; the 300 held-out dev questions are filtered out by question text"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, full fine-tune, bitsandbytes adamw_8bit
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 1024, scheduler: cosine_with_min_lr_0.1, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "user turn = the harness MATH_PROMPT_TEMPLATE with the question substituted; target = step-by-step solution, blank line, 'ANSWER: <number>', then <end_of_turn>. Loss on target tokens only (prompt labelled -100). Vision tower and projector frozen."
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/sft_train.jsonl, --out, ckpts/exp-02, --epochs, '1', --lr, '1e-5', --bs, '16', --accum, '2', --max-seq-len, '1024', --save-steps, '2000']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02_train.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 2000
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0733
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: "share of completions ending in a well-formed 'ANSWER: <number>' line (exp-01: 0.22)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.55
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 3974}
+  training_summary: {final_loss: 0.295, steps: 3974, notes: "train_runtime 5587 s, 22.8 samples/s, 1 epoch over 127153 rows (20 dropped over max_seq_len)"}
+  measurements:
+    - {metric: accuracy, value: 0.06, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: -0.0133}
+  diagnostic_result:
+    value: 0.173
+    path: /home/ben/task/analysis/exp-02_format_fail.json
+    notes: "17% of harness completions end in a well-formed ANSWER line (base model: 22%). The model answers the question correctly and then keeps going, inventing further question/answer pairs; the grader reads the last number, which belongs to an invented problem."
+  watch_set_result:
+    fixed: null
+    still_failing: null
+    regressions: null
+    path: /home/ben/task/logs/diag_stop.log
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Under the harness protocol the SFT model scored 0.060 (n=150) vs the base model's 0.073 - below the 0.35 falsification line. An offline probe on 100 held-out GSM8K-train dev items (logs/diag_stop.log, greedy, same gemma3 rendering) shows why: with a bare prompt the model scores 0.76 and stops correctly at <end_of_turn>, but with the harness's 10-shot prefix it scores 0.12 and never stops - it continues the in-context question/answer pattern. Training taught the maths and the stop token, but only for a prompt distribution the grader never uses."
+  decision: iterate
+  next_step: "exp-03: continue from ckpts/exp-02/final on a mixture where the majority of user turns carry a harness-style few-shot prefix (k~U{1,8}, GSM8K-train examples in the harness's own format), so the model learns to answer the last question and stop; keep a zero-shot share to avoid losing the bare-prompt behaviour."

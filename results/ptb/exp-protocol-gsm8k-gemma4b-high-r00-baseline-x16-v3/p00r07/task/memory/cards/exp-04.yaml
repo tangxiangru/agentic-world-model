@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T15:22:00Z'
+situation:
+  elapsed_h: 2.15
+  remaining_h: 7.85
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.692, protocol_n: 500}
+  trigger: "exp-03's error profile: 145 of the 154 dev-500 errors stop cleanly with a single ANSWER line, so the remaining loss is reasoning quality, not format. exp-02 saw each of its 48k problems at most twice, for one epoch."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev500.json, locator: "summary.wrong_but_stopped=145, summary.wrong_and_not_stopped=9"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "setup.data[0].selection", observation: "72000 OpenMathInstruct-2 rows over 48170 problems, at most 2 solutions each, one epoch"}
+  alternatives_rejected:
+    - {option: "Re-run one big SFT from the base model on 160k rows", reason: "same total data seen but ~2.6 h instead of ~1.3 h, and it throws away exp-02; continuing the incumbent keeps a working fallback and leaves budget for a rejection-sampling round"}
+    - {option: "Second epoch over the same sft_v1.jsonl", reason: "repeating 79k targets memorises phrasing; OpenMathInstruct-2 has 863k gsm8k-derived rows in the 12 shards downloaded, so fresh (problem, solution) pairs are free"}
+    - {option: "Rejection-sampling fine-tuning first", reason: "RFT is bounded by what the current model can already solve; better to raise the base competence with external data first, then rejection-sample from the stronger model"}
+    - {option: "Add MATH-derived rows for diversity", reason: "same reason as exp-02: LaTeX-heavy, non-integer answers work against the grader's last-number rule"}
+  pitfalls_hit:
+    - {what: "first sft_v2 build excluded whole problems already used in v1 and could only find 42317 rows: OpenMathInstruct-2's 12 shards hold ~70k distinct gsm8k-derived problems but ~12 solutions each, so problems, not solutions, are the scarce axis", cost_h: 0.15, fix: "switched to pair-level exclusion (--exclude-pairs) with max 4 solutions per problem: 80000 fresh (problem, solution) pairs, 0 overlapping v1"}
+  smoke_runs: []
+problem:
+  statement: "The incumbent's remaining errors are wrong arithmetic and wrong plans inside well-formed answers: 145 of 154 dev-500 errors terminate cleanly with exactly one ANSWER line. Format is solved; reasoning competence is not, and the model has only seen 79k supervised targets."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev500.json, locator: "summary", observation: "accuracy 0.692, stopped_rate 0.980, multi_marker_rate 0.002, wrong_but_stopped 145"}
+    - {path: /home/ben/task/logs/exp-02.log, locator: "final logged step", observation: "train loss still ~0.29 at the end of the single epoch, i.e. not driven into memorisation"}
+  affected_share: 0.94
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing SFT from exp-02/final for one epoch on 80000 fresh GSM8K-derived (problem, solution) pairs at lr 5e-6 will raise dev-500 accuracy above exp-03's 0.692 under the same greedy decode config."
+  mechanism: "Doubling the number of supervised targets (79k -> 159k), with 21181 rows on problems the model has never seen and the rest fresh solution paths for known problems, gives more coverage of grade-school problem types and more than one way to solve each; the halved learning rate keeps the already-learned format and stop behaviour intact."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 points"
+  falsified_if: "dev-500 accuracy is at or below exp-03's 0.692, or the clean-stop rate falls below 0.95"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 (shards 0-11 of 32, rev 469216e3f46f4dacf476b382e192485ea51a143e)"
+      n_examples: 80000
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, /home/ben/task/data/sft_v2.jsonl, --n-omi2, '80000', --max-per-problem, '4', --gold-repeat, '0', --exclude-pairs, /home/ben/task/data/sft_v1.jsonl, --seed, '1']
+      selection: "problem_source in {gsm8k, augmented_gsm8k} (GSM8K TRAIN split derived only), integer expected_answer, at most 4 solutions per problem, every (problem, solution) pair in sft_v1.jsonl excluded (verified: 0 pair overlap). 80000 rows over 46627 distinct problems, 21181 of them on problems exp-02 never saw. Same cleaning and same one-marker rule as sft_v1."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer (custom MaskedCETrainer), torch 2.8.0"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 16, grad_accum: 4, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02: prompt via templates/gemma3.jinja (10-shot system prefix on 8% of rows), completion = chain of thought, 'ANSWER: <int>', <end_of_turn>. Loss on completion tokens only."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_v2.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-04, --lr, '5e-6', --epochs, '1', --bs, '16', --grad-accum, '4', --max-seq-len, '3072', --fewshot-frac, '0.08', --warmup, '0.03', --seed, '0', --save-steps, '800', --greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 800
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '16', --max-tokens, '4000', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 500 (first 500 items, unshuffled)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.692
+    path: /home/ben/task/eval/exp-03_greedy_dev500.json
+  diagnostic:
+    what: "clean-stop rate (stop_reason=stop) -- continuing training must not undo exp-02's termination behaviour"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.30
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1250}
+  training_summary:
+    final_loss: 0.2472
+    steps: 1250
+    notes: "train_loss 0.271 over the epoch (exp-02's epoch averaged 0.317 at twice the lr). 4686 s wall, 17.1 samples/s. Intermediate checkpoint-800 and checkpoint-1250 deleted; final/ kept (setup.checkpoints.keep=last). final/ ships the greedy generation_config.json adopted in exp-03."
+  measurements:
+    - {metric: accuracy, value: 0.736, n: 500, path: /home/ben/task/eval/exp-04_dev500.json, delta_vs_comparator: 0.044}
+  diagnostic_result:
+    value: 0.994
+    path: /home/ben/task/analysis/exp-04_dev500.json
+    notes: "clean-stop rate 0.980 (exp-03) -> 0.994; the 9 greedy repetition loops fell to 3. multi_marker_rate 0.0. Errors that stop cleanly 145 -> 129."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-500 0.692 -> 0.736 (+4.4, stderr 0.020 each) from one more epoch on 80k fresh GSM8K-derived pairs at half the learning rate. The mechanism held on both counts: reasoning errors fell (145 -> 129 clean-stop errors) and termination improved rather than degraded."
+  decision: adopt
+  next_step: "The same intervention has not saturated: OpenMathInstruct-2's 12 shards still hold ~120k unused gsm8k-derived pairs. exp-05 repeats it with 100k fresh pairs; if the gain decays, exp-06 switches lever to rejection-sampling fine-tuning on the model's own correct solutions."

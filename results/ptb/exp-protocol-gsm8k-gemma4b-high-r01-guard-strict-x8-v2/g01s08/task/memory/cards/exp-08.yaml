@@ -1,0 +1,117 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T16:55:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.1
+  remaining_h: 2.9
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.748, protocol_n: 500}
+  trigger: "exp-04 was only 375 optimizer steps on 12k fewshot-rendered rows and its training loss was still falling (0.253) when the epoch ended; the same data type is the only intervention this session that produced a large gain, and 2.9h remain."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-04_train.log, locator: "final train_runtime line", observation: "train_loss 0.2528 over 375 steps, one epoch of 12k rows - the shortest training run that produced the incumbent"}
+    - {path: /home/ben/task/eval/exp-05_dev500.json, locator: "whole file", observation: "incumbent at 0.748 +/- 0.019 (n=500)"}
+  alternatives_rejected:
+    - {option: "Model soup of exp-04 and exp-06", reason: "exp-06 is exp-04 plus more training and scores 2.8 points lower at n=500; averaging them most likely lands between the two, and it would still cost an eval"}
+    - {option: "DPO on the correct/incorrect pairs already sampled", reason: "a new trainer and a new failure surface with under 3h left; the run would land with no time to validate the shipped directory"}
+    - {option: "Do nothing and ship the incumbent", reason: "final_model/ is already staged and verified, so this run risks nothing: it ships only if it wins at n=150 and then at n=500"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent misses roughly a quarter of dev-500 items. Its last training stage saw only 12k of the 158k available teacher rows in the prompt format the grader actually uses, so it is plausibly undertrained on that format rather than out of headroom."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_dev500.json, locator: "whole file", observation: "0.748 at n=500 - 126 items wrong"}
+    - {path: /home/ben/task/analysis/final_model_diagnostic.json, locator: "whole file", observation: "format compliance 0.993, so the residual is reasoning, not format"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "A second epoch-equivalent of 12k fewshot-rendered teacher rows that exp-04 never saw, continued from ckpts/exp-04/final at a lower LR, raises greedy dev-150 accuracy above the incumbent's 0.7267."
+  mechanism: "Same intervention that produced the incumbent, on disjoint rows: more 405B-distilled solutions seen in the grader's own prompt format. The rows come from the same OpenMathInstruct-2 pool, so this is additional exposure rather than a distribution shift, and self-generated data (which exp-06 showed does not help here) is not involved."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "+0 to +3 points; a second epoch of teacher data has diminishing returns"}
+  falsified_if: "greedy dev-150 accuracy at or below 0.7267, or format compliance below 0.98"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_fewshot_b.jsonl
+      source: "derived:exp-03 (rows 12000-24000 of data/sft_omi2_x2.jsonl, disjoint from the 12k exp-04 trained on; fewshot blocks from the openai/gsm8k TRAIN split)"
+      n_examples: 12000
+      built_by: /home/ben/task/prep_fewshot.py
+      build_command: [python, prep_fewshot.py, --n, '12000', --skip, '12000', --seed, '3', --max-seq-len, '2560', --out, data/sft_fewshot_b.jsonl]
+      selection: "same rendering as exp-04 (k=0 with p=0.2, k=10 with p=0.3, else k~U{1..9}; system-message fewshot block folded into the user turn by templates/gemma3.jinja), applied to source rows 12000-24000 with a different seed; rows over 2560 tokens dropped"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, torch 2.8.0"
+    peft: "none (full fine-tune; vision tower and projector frozen)"
+    hyperparams: {lr: 4.0e-6, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "bf16 weights + bf16 autocast, 8-bit AdamW, gradient checkpointing", seed: 0}
+    target_format: "unchanged: solution body, blank line, 'ANSWER: N', then <end_of_turn>; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_fewshot_b.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, ckpts/exp-08, --bs, '4', --grad-accum, '8', --lr, '4e-6', --epochs, '1', --max-seq-len, '2560', --grad-checkpointing, --dtype, bf16]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-08_train.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k test in harness order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7267
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "format compliance (end-in-ANSWER-line share) at n=150"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.65
+  output_checkpoint: /home/ben/task/ckpts/exp-08/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08/final, step: 375}
+  training_summary: {final_loss: 0.2505, steps: 375, notes: "5.1 samples/s; final loss essentially identical to exp-04's 0.2528 on the disjoint 12k rows"}
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp-08_dev150.json, delta_vs_comparator: -0.0134}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-08_diagnostic.json
+    notes: "format compliance perfect (150/150 end in an ANSWER line, no token-cap hits)"
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "0.7267 -> 0.7133 (-1.3, a third of a standard error): a second 12k-row epoch of the same teacher data in the same prompt format did not improve the incumbent. Together with exp-06 this says the checkpoint is not undertrained on this data - two further epochs from two different data sources both landed slightly below it."
+  decision: reject
+  next_step: "Ship exp-05 (exp-04 weights + greedy decode), already staged and verified in final_model/. A real next lever would be harder data (MATH-augmented or problems the model fails at k=8) rather than more of the same."

@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T16:35:00Z'
+situation:
+  elapsed_h: 6.5
+  remaining_h: 3.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.704, protocol_n: 500}
+  trigger: "exp-06 found the two candidate checkpoints equivalent (0.704 vs 0.698 at n=500) but not identical: on the same 500 items 27 are solved only by exp-05 and 30 only by exp-02, with 121 missed by both. Two equally-accurate models from the same base with partly disjoint error sets is the textbook setting for a weight average."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-06_diag.json, locator: "exp05_only=27, exp03_only=30, both_correct=322, both_wrong=121"}
+    - {path: /home/ben/task/eval/exp-06_exp03_dev500.json, locator: "accuracy 0.704, stderr 0.0205"}
+    - {path: /home/ben/task/eval/exp-06_exp05_dev500.json, locator: "accuracy 0.698, stderr 0.0206"}
+  alternatives_rejected:
+    - {option: "One more 2-hour training run (more data, or a second RFT round)", reason: "3.5 h remain and a training run plus its eval plus packaging does not fit with any margin; a soup costs about 20 minutes end to end"}
+    - {option: "Ensemble the two models at inference", reason: "the harness loads exactly one model directory with vllm; there is nowhere to put a second forward pass"}
+    - {option: "Keep the n=500 protocol for the final decision", reason: "the whole remaining question is a 0.6-point gap; at 32 connections a 500-item eval took under 3 minutes, so the full 1319-item test set is affordable and removes the noise from the shipping decision entirely"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "Neither candidate is better than the other, and both leave 121 of 500 items unsolved. With no budget left for another training run, the only remaining lever on accuracy is to combine what the two runs already learned, and the shipping decision itself still rests on a protocol whose stderr (0.021) is three times the gap being decided."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_diag.json, locator: "57 of 500 items are solved by exactly one of the two models", observation: "the two runs did not converge to the same function despite sharing a base and two thirds of their data"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A uniform (0.5/0.5) parameter average of ckpts/exp-02/final and ckpts/exp-05/final will score at least as high as the better parent on the full 1319-item test set."
+  mechanism: "Both checkpoints are full fine-tunes of the same base snapshot with the same objective, so they lie in a connected low-loss basin and their parameters remain linearly mode-connected; averaging cancels run-specific noise while keeping the shared solution, which is why model soups typically match or beat their best member."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "0 to +2 points against the better parent; a soup that lands far below either parent means the two are not linearly mode-connected"
+  falsified_if: "the soup scores below both parents on the full test set"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "no new data - the two parents were trained on data/sft_v2.jsonl (exp-02) and data/sft_v3.jsonl (exp-05); this card only averages their weights"
+      n_examples: 160581
+      built_by: /home/ben/task/scripts/sample_rft.py
+      build_command: [python3, scripts/sample_rft.py, --model, /home/ben/task/ckpts/exp-02/final, --questions, data/rft_questions.jsonl, --out, data/rft_raw.jsonl, --k, '4']
+      selection: "no new data"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: merge
+    framework: torch state-dict average, saved as Gemma3ForConditionalGeneration
+    peft: none
+    hyperparams: {wa: 0.5, precision: bf16, seed: 0}
+    target_format: "unchanged; the soup carries a greedy generation_config (temperature 0.0, do_sample false) per exp-03"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python3, scripts/soup.py, --a, /home/ben/task/ckpts/exp-02/final, --b, /home/ben/task/ckpts/exp-05/final, --wa, '0.5', --out, /home/ben/task/ckpts/soup_0505]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/soup_0505
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: null
+    path: /home/ben/task/eval/exp-07_exp03_test1319.json
+  diagnostic:
+    what: "paired item counts on the full test set: items the soup solves that neither parent does, and items it loses that a parent had"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup_0505, step: 0}
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 1092}
+    - {path: /home/ben/task/ckpts/exp-05/final_greedy, step: 1250}
+  training_summary: {final_loss: null, steps: null, notes: "no training. Soup = 0.5*exp-02/final + 0.5*exp-05/final over the full state dict (identical key sets), saved as Gemma3ForConditionalGeneration with processor and tokenizer and a greedy generation_config."}
+  measurements:
+    - {metric: accuracy, value: 0.7005, n: 1319, path: /home/ben/task/eval/exp-07_exp-05_final_greedy_test1319.json, delta_vs_comparator: 0.0068}
+    - {metric: accuracy, value: 0.6945, n: 1319, path: /home/ben/task/eval/exp-07_soup_0505_test1319.json, delta_vs_comparator: 0.0008}
+    - {metric: accuracy, value: 0.6937, n: 1319, path: /home/ben/task/eval/exp-07_exp-02_final_greedy_test1319.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 21
+    path: /home/ben/task/analysis/exp-07_diag.json
+    notes: "On all 1319 items the soup solves 21 that neither parent solves, and 284 are missed by all three. Against exp-02 the soup is 73 up / 72 down; against exp-05 61 up / 69 down. The averaging does move the function, it just does not move the score."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "On the full 1319-item test set the soup scores 0.6945, between its parents (exp-02 0.6937, exp-05 0.7005) and 0.6 points below the better one, so it does not match the best member. The averaging is not degenerate - it wins 21 items neither parent gets - but the three checkpoints are one population: 0.694/0.695/0.701 with stderr 0.0127."
+  decision: reject
+  next_step: "Ship exp-05/final_greedy: highest measured value (0.7005) under the largest protocol run in this batch. Note for the record that the dev-150 ordering (exp-02 0.720 > exp-05 0.693) inverted at n=1319 (exp-05 0.7005 > exp-02 0.6937) - at n=150 this benchmark cannot rank checkpoints that are within ~5 points of each other, and no decision in a later batch should be made on it."

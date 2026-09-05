@@ -1,0 +1,110 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T17:58:41Z'
+situation:
+  elapsed_h: 3.75
+  remaining_h: 6.25
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.605, protocol_n: 200}
+  trigger: "exp-03 showed 1.54x more off-policy OpenMathInstruct-2 data does not move dev-200 (0.590 vs 0.605, inside noise), while sampling exp-02 eight times per question solves 14,244/15,473 GSM8K-train-derived questions at least once - the model can reach the right answer far more often than its single greedy pass does (logs/gen_rft_exp04.log)."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/gen_rft_exp04.log, locator: "final line: questions solved at least once: 14244/15473; rows kept 50178"}
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "conclusion.verdict=contradicted"}
+  alternatives_rejected:
+    - {option: "Continue training exp-02/final on the RFT data alone at a low lr", reason: "cheaper (~45 min) but drifts a model already tuned on this distribution; STaR/RFT results are reported for retraining from the base on the union, and the ~1.6h that costs is affordable with 6.25h left"}
+    - {option: "Raise lr to 2e-5 / train 2 epochs on the exp-02 mix", reason: "an optimization-axis test, not a data-axis one; it does not use the new information that pass@8 is 0.92 while greedy is 0.60. Kept as the next candidate if RFT disappoints"}
+    - {option: "DPO on correct-vs-incorrect sample pairs", reason: "needs a preference-pair build and a second trainer; RFT extracts most of the same signal with the SFT pipeline that is already validated"}
+    - {option: "Sample at temperature 0.7 instead of 1.0", reason: "lower temperature narrows the reasoning paths recovered; 1.0 with 8 samples gave 92% coverage, which is the point of the exercise"}
+  pitfalls_hit:
+    - {what: "gen_rft.py keeps the 4 SHORTEST distinct correct samples per question, so RFT targets are terser than the OpenMathInstruct-2 ones (median 363 vs 445 chars); terser chains can mean skipped arithmetic steps", cost_h: 0.0, fix: "not re-generated (40 min of GPU); the union with the 66k longer off-policy targets keeps the length distribution mixed. Watch the diagnostic for a format/length regression."}
+  smoke_runs:
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft_exp04_decon_input.jsonl], outcome: "50178 documents scanned, 0 contaminated, 0 matches"}
+problem:
+  statement: "exp-02's single greedy pass answers 60.5% of dev-200 correctly, but eight temperature-1.0 samples from that same checkpoint reach the gold answer on 92% of held-out GSM8K-train-derived questions. The model's weight distribution already contains the right reasoning paths far more often than its argmax decoding surfaces them, and off-policy data (exp-03) does not close that gap."
+  evidence:
+    - {path: /home/ben/task/logs/gen_rft_exp04.log, locator: "questions solved at least once: 14244/15473", observation: "pass@8 = 0.92 on GSM8K train + augmented questions vs 0.605 greedy on dev-200"}
+    - {path: /home/ben/task/analysis/exp-02_final_format.json, locator: "n_wrong=79, format_rate=0.985", observation: "all remaining dev-200 errors are wrong numbers inside well-formed answers"}
+    - {path: /home/ben/task/eval/exp-03_final.json, locator: "accuracy=0.59", observation: "more off-policy data did not move the reasoning term"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: dev200-wrong-0, source: /home/ben/task/analysis/exp-02_final_format.json, question: "oranges: good vs bad/unripe/sour (dev-200 item)", gold: "17", model_output: "25 - (3 + 5 + 2) = 15 ... ANSWER: 15", failure: "mis-set-up; a different sampled path would likely subtract the right categories"}
+    - {id: dev200-wrong-1, source: /home/ben/task/analysis/exp-02_final_format.json, question: "Mandy's loan after 3 months (dev-200 item)", gold: "106", model_output: "100 + (100 * 2/100) = 102 ... ANSWER: 102", failure: "applied the monthly rate once instead of three times"}
+    - {id: dev200-wrong-3, source: /home/ben/task/analysis/exp-02_final_format.json, question: "Henry's cookies (dev-200 item)", gold: "50", model_output: "2x + 14 = 110 -> x = 48 ... ANSWER: 48", failure: "wrong constant in the equation"}
+  watch_set: null
+hypothesis:
+  claim: "Retraining the base checkpoint on the union of exp-02's 66,473 off-policy rows and 50,178 rejection-sampled on-policy rows (exp-02's own temperature-1.0 samples, kept only when the final ANSWER matches gold) will raise dev-200 accuracy above exp-02's 0.605."
+  mechanism: "Rejection sampling concentrates probability mass on reasoning paths this model actually produces AND that end in the right answer, which is exactly the gap between pass@8 (0.92) and greedy (0.605). Unlike exp-03's extra Llama-405B solutions, these targets are in the model's own idiom, so the gradient sharpens paths it can already reach rather than teaching a foreign style."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+3 to +8 points on dev-200"}
+  falsified_if: "dev-200 accuracy is at or below exp-02's 0.605, i.e. on-policy filtered data buys no more than the off-policy data did in exp-03."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_rft_exp04.jsonl
+      source: "derived:exp-02 (concatenation of data/sft_exp02.jsonl - hf:openai/gsm8k train + hf:nvidia/OpenMathInstruct-2 train_1M gsm8k rows - and data/rft_exp04.jsonl, synthetic:self sampled from ckpts/exp-02/final)"
+      n_examples: 116651
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, scripts/gen_rft.py, --model, ckpts/exp-02/final, --out, data/rft_exp04.jsonl, --k, "8", --n-aug, "8000", --temperature, "1.0", --max-per-question, "4"]
+      selection: "RFT half: 7,473 GSM8K *train* questions + 8,000 distinct OpenMathInstruct-2 augmented_gsm8k questions (GSM8K-train-seeded), 8 samples each at T=1.0/top_p=0.95, keep a sample only if its single 'ANSWER: n' equals the gold answer, dedup exact, at most 4 shortest distinct per question -> 50,178 rows over 14,244 solved questions. SFT half: exp-02's 66,473 rows verbatim. Every target ends with <end_of_turn> and carries 'ANSWER:' exactly once. The GSM8K test split is never read."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, completion-only loss mask (same script as exp-02/exp-03)"
+    peft: "none (full fine-tune of the 3.88B language tower; SigLIP vision tower and multimodal projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 1280, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: prompt rendered by templates/gemma3.jinja with add_generation_prompt=True; target = reasoning + a final 'ANSWER: <int>' line + '<end_of_turn>'; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, data/sft_rft_exp04.jsonl, --out, ckpts/exp-04, --lr, "1e-5", --epochs, "1", --bs, "8", --accum, "4", --max-seq-len, "1280", --save-steps, "1800"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1800
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "200", --max-connections, "32", --max-tokens, "1024", --gpu-memory-utilization, "0.6"]
+    dev_set: "official inspect_evals/gsm8k test split --limit 200 (first 200 items, unshuffled)"
+    n: 200
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.605
+    path: /home/ben/task/eval/exp-02_final.json
+  diagnostic:
+    what: "format-compliance rate and wrong-answer count from scripts/format_diag.py, to check the terser RFT targets did not reintroduce run-ons or shorten chains into more arithmetic slips"
+    n: 200
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.52
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1800, step: 1800}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-3600, step: 3600}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-3640, step: 3640}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 3640}
+  training_summary: {final_loss: 0.293, steps: 3640, notes: "116,455 of 116,651 rows kept; 21.3 samples/s; train_loss 0.2930 (exp-02 0.3280, exp-03 0.3117) - the on-policy half is, as expected, the easiest data for this model to fit"}
+  measurements:
+    - {metric: accuracy, value: 0.59, n: 200, path: /home/ben/task/eval/exp-04_final.json, delta_vs_comparator: -0.015}
+  diagnostic_result: {value: 0.99, path: /home/ben/task/analysis/exp-04_final_format.json, notes: "198/200 well-formed final answer lines, 2 run-ons, 82 wrong. No format regression from the terser RFT targets; the reasoning term again did not move."}
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Rejection-sampling fine-tuning on 50,178 of exp-02's own verified-correct samples, unioned with exp-02's data and retrained from base, gave 0.590 vs exp-02's 0.605 - a -1.5 point delta inside the n=200 stderr of 3.5. Training loss fell to 0.293, so the on-policy data was absorbed; it did not convert into greedy accuracy, even though pass@8 on the sampled questions was 0.92."
+  decision: reject
+  next_step: "Three quite different data mixes (66k off-policy, 102k off-policy, 116k with on-policy RFT) all land at 0.59-0.605, i.e. inside one stderr of each other. Data composition is not the axis; measurement precision at n=200 is now the binding constraint on any decision. Score the candidates on the full 1319-item test set to get a real ranking, probe whether the grader's 10-shot prefix itself costs accuracy, and spend the remaining budget on the optimization axis (a second epoch) rather than on more data."

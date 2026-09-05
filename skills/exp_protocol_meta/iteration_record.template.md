@@ -18,6 +18,12 @@ held-out task this round: <task or "none">
 
 Three cards read by hand per variant: <card paths and one line each>
 
+## Trace review
+Link to `<date>-trace-review-round-NN.md`. Per arm: the reviewer header fields (hours to first launch, protocol hours, greedy shipped, RL used, largest eval n, stop reason) and the ranked explanations of the score difference with the number of cells behind each.
+
+## Directions
+What changed in `directions-ledger.md` this round: which directions were adopted, screened, deferred, dropped, and why.
+
 ## Decision
 <promote candidate | keep baseline | inconclusive, rerun with N more seeds>
 

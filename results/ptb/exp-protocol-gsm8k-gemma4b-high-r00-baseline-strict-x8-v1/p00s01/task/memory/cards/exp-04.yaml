@@ -1,0 +1,142 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T21:19:58Z'
+situation:
+  elapsed_h: 2.35
+  remaining_h: 7.65
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "On 800 held-out augmented-GSM8K problems the incumbent scores 0.759 greedy but 0.835 by majority vote over 8 samples at T=0.8 (analysis/dev_maj8_fs10.json). 7.6 points sit in the gap between one sample and a vote, and the grader reads only the last number of a single 4000-token completion -- so a vote can be moved inside that completion."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/dev_maj8_fs10.json
+      locator: "summary: accuracy 0.686 (T=0.8 single), maj_accuracy 0.835 (8 samples), n=800"
+    - path: /home/ben/task/analysis/dev_greedy_fs10.json
+      locator: "summary: accuracy 0.75875 greedy, n=800"
+  alternatives_rejected:
+    - option: "Plain RFT: keep correct self-samples, retrain, one solution per answer"
+      reason: "captures only the easier part of the same signal (+2-4 pts typical) and leaves the 7.6-pt vote gap untouched; it stays on the shelf as the fallback if this card fails."
+    - option: "Second SFT round on 150k more OpenMathInstruct-2 solutions"
+      reason: "the fresh-problem pool is exhausted -- 6 more full shards yielded only 5014 problems not already trained on (logs/build_data2.log) -- so a second round is mostly re-paraphrase of the same 81k problems; OpenMathInstruct-2's own 1M->5M scaling is worth ~1 pt on GSM8K. Costs 2.2 h for less."
+    - option: "Emit k attempts without an explicit vote line and let the matcher read the last one"
+      reason: "the matcher reads the LAST number, so with no vote the last attempt decides; that is one sample, not a vote."
+    - option: "Ask for 5 attempts instead of 3"
+      reason: "attempts are correlated inside one context, so the marginal attempt is worth less than in true self-consistency, and 5 x ~180 tokens starts to risk the repetition loops already seen at 4000 tokens."
+  pitfalls_hit:
+    - what: "cd inside a Bash call persists across calls; a later relative path resolved under ckpts/exp-03-greedy and the card file appeared missing"
+      cost_h: 0.03
+      fix: "always cd /home/ben/task at the head of a compound command"
+  smoke_runs:
+    - command: [python, dev_eval.py, --model, ckpts/exp-02/final, --n, '800', --fewshot, '10', --temperature, '0']
+      outcome: "0.75875 on held-out fresh problems; the 10-shot prefix is not hurting (0-shot scores 0.750), so the 15% few-shot mix in training is doing its job"
+    - command: [python, vote_data.py, --model, ckpts/exp-02/final, --n-problems, '300', --k, '4', --out, /tmp/vote_smoke.jsonl]
+      outcome: "243/300 problems yielded a usable triple (152 unanimous, 91 mixed); pass@1 from the histogram is 0.723, consistent with dev; sampling runs at ~3000 generations/min so 18k problems x k=4 costs ~25 min"
+problem:
+  statement: "The incumbent commits to its first chain of thought. On held-out problems its single greedy answer is right 75.9% of the time while the majority of 8 samples is right 83.5% of the time: on ~8% of problems the model knows the right answer in the sense that most of its samples find it, but the one sample the grader sees is wrong."
+  evidence:
+    - path: /home/ben/task/analysis/dev_maj8_fs10.json
+      locator: "summary"
+      observation: "maj@8 0.835 vs greedy 0.759 on the same 800 held-out problems"
+    - path: /home/ben/task/analysis/vote_exp04_stats.json
+      locator: "n_correct_histogram from the 300-problem smoke run"
+      observation: "of 300 problems, 62 had 3/4 samples correct and 37 had 2/4 -- a third of the set is decided by which sample you happen to read"
+  affected_share: 0.076
+  failure_examples:
+    - id: smoke-mixed-1
+      source: /tmp/vote_smoke.jsonl
+      question: "(Emily deadlift belt vs straps, held-out augmented-GSM8K problem)"
+      gold: "47.5"
+      model_output: "attempt 1 computes 15% of the belt's 20 lb instead of 15% of the 450 lb deadlift and answers 3; attempts 2 and 3 answer 47.5"
+      failure: "one sample misreads which quantity the percentage applies to; a vote over three samples recovers the right answer"
+    - id: dev-greedy-loop
+      source: /home/ben/task/analysis/dev_greedy_fs10.json
+      question: "(2.6% of the 800 held-out problems)"
+      gold: "n/a"
+      model_output: "generation runs to the 1024-token cap in a repetition loop"
+      failure: "a single derailed chain has no recovery path in the current format"
+  watch_set: null
+hypothesis:
+  claim: "Fine-tuning the incumbent to emit three distinct solution attempts followed by an explicit majority-vote line, instead of one solution, raises accuracy on the 800-problem held-out dev set and on dev-150."
+  mechanism: "The training targets are triples of the model's own temperature-1.0 samples whose majority is the gold answer, and 37% of them mix correct with incorrect attempts, so the target teaches the model both to vary its derivation between attempts and to resolve disagreement by counting rather than by trusting attempt 1. The grader reads the last number in the completion, which is the vote."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+3 to +6 pts on the held-out 800 (i.e. part, not all, of the 7.6-pt greedy-to-maj@8 gap; in-context attempts are correlated in a way independent samples are not)"
+  falsified_if: "held-out-800 accuracy at or below the incumbent's 0.759, or the attempts collapse (over 80% of dev completions have all three attempts reaching the same answer AND accuracy not above 0.759) -- collapse would mean the vote is rubber-stamping attempt 1."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/vote_exp04.jsonl
+      source: "synthetic:self (exp-02/final samples over OpenMathInstruct-2 GSM8K-derived problems already in data/sft_omi2_gsm8k.jsonl)"
+      n_examples: 14236
+      built_by: /home/ben/task/vote_data.py
+      build_command: [python, vote_data.py, --model, ckpts/exp-02/final, --n-problems, '18000', --k, '4', --out, data/vote_exp04.jsonl, --stats-out, analysis/vote_exp04_stats.json]
+      selection: "k=4 samples at T=1.0/top_p=0.95 per problem; drop length-truncated samples; require at least 2 distinct correct samples; triple = 2 correct + 1 incorrect where an incorrect sample exists, else 3 distinct correct; shuffled so the wrong attempt is not always last; each attempt's own 'ANSWER:' line is stripped and replaced by 'So the answer is n.', leaving exactly one 'ANSWER: ' marker at the end of the target"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused-linear-CE"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2.0, batch_size: 32, grad_accum: 3, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "'Attempt 1:' <solution> 'So the answer is n.' x3, then 'The three attempts give a, b, c. The majority answer is m.', then 'ANSWER: m' and <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, data/vote_exp04.jsonl, --out, /home/ben/task/ckpts/exp-04, --epochs, '2', --lr, '1e-5', --bs, '32', --accum, '3', --max-seq-len, '3072', --liger, --attn, flash_attention_2, --optim, adamw_bnb_8bit, --save-steps, '150']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 150
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7267
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: "held-out 800 (dev_eval.py, greedy, 10-shot) accuracy, plus the share of dev completions whose three attempts do NOT all agree -- the second number says whether the vote is doing work or rubber-stamping"
+    n: 800
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.85
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 298}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-150, step: 150}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-298, step: 298}
+  training_summary: {final_loss: 0.1863, steps: 298, notes: "14222 rows of 14236 kept (14 over max_seq_len 3072), 12.3M tokens, 2 epochs, 31 min; generation_config set to greedy after saving"}
+  measurements:
+    - {metric: accuracy, value: 0.7733, n: 150, path: /home/ben/task/eval/exp04_dev150.json, delta_vs_comparator: 0.0466}
+    - {metric: accuracy, value: 0.77, n: 800, path: /home/ben/task/analysis/exp04_dev800.json, delta_vs_comparator: 0.0113}
+  diagnostic_result:
+    value: 0.23
+    path: /home/ben/task/analysis/exp04_dev800.json
+    notes: "789/800 completions emit exactly three attempts; 182/792 (23%) have attempts that do not all agree, so the vote is doing real work rather than rubber-stamping. Among the disagreements the vote rescues 24 items (majority right, attempt 1 wrong) and breaks 11 (attempt 1 right, majority wrong): net +13/800 = +1.6 pts, which is the whole measured effect. Truncation fell from 2.6% to 0.5%."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "The mechanism is confirmed and quantified -- three distinct attempts, 23% disagreement, 24 rescues against 11 breaks -- but the effect is at the edge of what either dev set can resolve: +1.1 pts on the held-out 800 (paired 64 vs 55 flips, McNemar p=0.41) and +4.7 pts on dev-150 (0.7733 vs 0.7267), where run-to-run noise alone is ~6 pts. In-context attempts are far more correlated than independent samples, so only about a fifth of the 7.6-pt maj@8 gap was recoverable."
+  decision: adopt
+  next_step: "Both dev signals move the same way and truncation improved, so exp-04 becomes the incumbent. exp-05: the attempts are correlated because they all come from one model at one temperature -- but the limiting factor is really solver quality, so spend the next block on a second SFT round over 110k additional distinct OpenMathInstruct-2 solutions for the same problems, then re-apply the vote format on top."

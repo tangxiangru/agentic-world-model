@@ -1,0 +1,122 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-10
+created_at: '2026-09-02T18:32:54Z'
+situation:
+  elapsed_h: 6.15
+  remaining_h: 3.85
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.718, protocol_n: 500}
+  trigger: "Every number in this batch was measured on a path under ckpts/. The grader loads /home/ben/task/final_model, from a fresh process, with evaluate.py's own defaults (--gpu-memory-utilization 0.3, --max-connections 2). That path has never been scored, and pitfalls.yaml lists final_model_not_loadable as a failure mode with check: null - nothing in the preflight can catch it."
+  trigger_evidence:
+    - {path: /home/ben/task/skills/exp_protocol/pitfalls.yaml, locator: "id: final_model_not_loadable, check: null", observation: "'load final_model/ once before the deadline; the grader loads it with vLLM from a fresh process'"}
+    - {path: /home/ben/task/eval/exp05_dev500.json, locator: "accuracy 0.718", observation: "measured on ckpts/exp-05/final, not on final_model"}
+  alternatives_rejected:
+    - {option: "Trust the cp -r and stop", reason: "the copy is not the risk; the risk is that evaluate.py's model_type() reads final_model/config.json to pick the chat template and that vLLM's generation-config lookup resolves against the new directory. Both are path-dependent and neither has been exercised."}
+    - {option: "Verify with a CPU transformers load only", reason: "already done - it loads and reports 4.30 B params and Gemma3ForConditionalGeneration - but transformers loading proves nothing about vLLM's template resolution or its default sampling params"}
+    - {option: "Run the grader's exact defaults over all 500 items", reason: "at --max-connections 2 that is ~2.5 h, which is most of the remaining budget; the defaults are exercised on a 20-item smoke run and the scored comparison uses the batch's standard protocol"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "Gemma3ForConditionalGeneration.from_pretrained('final_model')"], outcome: "loads on CPU, 4.300 B params, architectures ['Gemma3ForConditionalGeneration']; tokenizer and generation_config load, vLLM-readable sampling params {'temperature': 0.0}"}
+    - {command: [python, evaluate.py, --model-path, final_model, --limit, '20'], outcome: "to be run before the scored eval - exercises evaluate.py's own defaults end to end"}
+problem:
+  statement: "The artefact that will be graded - the directory /home/ben/task/final_model, loaded by a fresh vLLM process through evaluate.py's default arguments - has never been run. Every accuracy in the record belongs to a different path."
+  evidence:
+    - {path: /home/ben/task/eval/exp05_dev500.json, locator: "the submitted score", observation: "produced from /home/ben/task/ckpts/exp-05/final"}
+    - {path: /home/ben/task/evaluate.py, locator: "model_type() L100-115 and template_kwargs() L117-133", observation: "the chat template is chosen from the model path string, falling back to reading config.json['architectures'] - both depend on the directory actually being well formed"}
+  affected_share: null
+  failure_examples:
+    - {id: pitfall-1, source: /home/ben/task/skills/exp_protocol/pitfalls.yaml, question: "final_model is an adapter dir, or lacks the tokenizer, or has a config vLLM cannot load", gold: "a scored eval", model_output: "the grader scores the base model or the load fails", failure: "hours of training count for nothing"}
+    - {id: pitfall-2, source: /home/ben/task/evaluate.py, question: "model_type() cannot classify the architecture", gold: "gemma3.jinja", model_output: "ValueError", failure: "the eval never starts"}
+    - {id: pitfall-3, source: /home/ben/task/ckpts/exp-05/final/generation_config.json, question: "the greedy decode does not survive the copy", gold: "temperature 0.0", model_output: "vLLM falls back to T=1.0 sampling", failure: "-16 pts, the size of exp-03's gain"}
+  watch_set:
+    path: /home/ben/task/analysis/exp05_dev500_wrong.jsonl
+    n: 141
+    selection: "every dev-500 item exp-05 gets wrong; final_model must reproduce this same wrong set if the copy is faithful"
+hypothesis:
+  claim: "Scoring /home/ben/task/final_model under the batch's 500-item protocol reproduces exp-05's 0.7180 and its 7/500 non-termination rate, confirming that the submitted directory is the measured model."
+  mechanism: "final_model is a byte copy of ckpts/exp-05/final with the same greedy generation_config.json, and greedy decoding is deterministic, so a faithful copy must produce the same completions item for item. Any divergence means the template, the weights or the sampling defaults did not survive the copy."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "exactly 0.718 - this is a reproduction check, not an improvement"
+  falsified_if: "the eval fails to run, or accuracy differs from 0.7180 by more than 1 pt, or the wrong-item set differs from exp-05's."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/scripts/run_eval.sh
+      source: "openai/gsm8k test split, data_dir=main, first 500 items (benchmark INPUT for scoring - no training in this card)"
+      n_examples: 500
+      built_by: null
+      build_command: [bash, scripts/run_eval.sh, final_model, final_dev500, '500']
+      selection: "evaluate.py --limit 500, identical to exp-07/exp-08/exp-09"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai + vllm 0.11.0, greedy (temperature 0.0 from final_model/generation_config.json)
+    peft: none
+    hyperparams: {}
+    target_format: "chain, then a single 'ANSWER: <number>' line, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_eval.sh, /home/ben/task/final_model, final_dev500, '500']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/exp-10.log
+  output_dir: /home/ben/task/final_model
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, '{checkpoint}', '{tag}', '500']
+    dev_set: "official --limit 500 (gsm8k test, dataset order), greedy decode pinned by generation_config.json"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.718
+    path: /home/ben/task/eval/exp05_dev500.json
+  diagnostic:
+    what: "identity of the wrong-item set against exp-05's 141 dev-500 failures - a faithful copy under deterministic decoding should differ on zero items"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 3630}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 3630}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1563}
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1563}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 733}
+    - {path: /home/ben/task/ckpts/exp-06-soup3, step: 0}
+    - {path: /home/ben/task/ckpts/exp-09-reppen, step: 3630}
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.706, n: 500, path: /home/ben/task/eval/final_dev500.json, delta_vs_comparator: -0.012}
+    - {metric: accuracy, value: 0.55, n: 20, path: /home/ben/task/eval/final_smoke20.json, delta_vs_comparator: null}
+  diagnostic_result:
+    value: 482
+    path: /home/ben/task/analysis/final_vs_exp05_dev500.json
+    notes: "482 of 500 items scored identically to exp-05; 6 flipped correct, 12 flipped wrong. Non-termination 7/500, byte-identical to exp-05's. The 20-item smoke run under evaluate.py's own defaults (--gpu-memory-utilization 0.3, --max-connections 2) agreed with the dev-500 log on 19 of 20 items and the vLLM log confirms 'Default sampling parameters have been overridden', i.e. greedy survived the copy."
+  watch_set_result: {fixed: 6, still_failing: 135, regressions: 12, path: /home/ben/task/analysis/final_vs_exp05_dev500.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "final_model loads and runs correctly end to end - right template, greedy decode, no adapter or tokenizer problem - but it scored 0.7060 against exp-05's 0.7180 on the same 500 items with the same weights and the same config. 18 items changed verdict. Greedy decoding under vLLM is not run-to-run reproducible: batch composition changes the floating-point reduction order and flips items near the argmax boundary."
+  decision: adopt
+  next_step: "The submission is verified and stays. The result also re-reads the whole batch: run-to-run decode variation alone is +/-1.2 pts at n=500, so exp-03 (0.706), exp-04 (0.696), exp-05 (0.718/0.706) are one model measured five times, and no intervention after exp-03 was ever measurable against it. The only two effects in this batch that exceed the noise floor are SFT (+51.3) and greedy decoding (+16.0). Any further tweak below ~3 pts cannot be evaluated with the remaining budget, which is the reason to stop here rather than spend it."

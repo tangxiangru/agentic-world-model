@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-02T22:03:38Z'
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: null
+      protocol_n: null
+  trigger: "Start of the batch: nothing has been measured yet, and the harness has three properties that change the SFT design (10-shot system prefix from the gsm8k TRAIN split, 'ANSWER: N' last-line format, match(numeric=True, location=end) which reads the LAST numeric token of the completion). I need the base model's number and its failure mode under exactly this harness before choosing a target format."
+  trigger_evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "lines 27-78 (MATH_PROMPT_TEMPLATE, fewshot=10 seed=42 from split=train, scorer=match(numeric=True))"
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py
+      locator: "match_str lines 44-92: reversed whitespace split, first numeric token wins"
+    - path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json
+      locator: "whole file: do_sample true, top_k 64, top_p 0.95, no temperature -> vLLM serve applies these as default sampling params"
+  alternatives_rejected:
+    - option: "Skip the baseline and go straight to SFT"
+      reason: "Rule 2 of the protocol: a comparator must be measured under the same protocol as the candidate; without it the first SFT delta is unmeasurable."
+    - option: "Use a train-split holdout as the dev set instead of evaluate.py --limit 150"
+      reason: "The grading path (chat template, vLLM sampling defaults, last-numeric-token scorer) is exactly what I need to measure; a home-made dev loop would not exercise it. A train holdout is kept as a secondary signal only."
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "google/gemma-3-4b-pt is a base (non-instruction-tuned) checkpoint. Under this harness it must (a) stop at <end_of_turn> rather than continuing to generate further turns, and (b) end its completion with 'ANSWER: N' so that the last numeric token in the completion is the answer. A base model typically does neither reliably, so the measured accuracy is expected to be dominated by format/termination failures rather than by arithmetic ability."
+  evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py
+      locator: "first_number_normalized, lines 84-89"
+      observation: "Any number emitted after the intended answer silently becomes the graded answer, so a model that keeps generating is scored wrong even when its reasoning was right."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Under this exact harness, the base model's incorrect items are dominated by format/termination failures (no well-formed final 'ANSWER: N', or text continuing past it) rather than by arithmetic errors, so an SFT stage that only fixes the output contract should move accuracy substantially."
+  mechanism: "A pretrained-only checkpoint has no reason to emit <end_of_turn> or to honour the 'last line = ANSWER: $ANSWER' instruction; the 10-shot prefix demonstrates the format but base models imitate it inconsistently, and the scorer reads the last numeric token of whatever was produced."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "baseline expected in the 0.15-0.45 band; the diagnostic is the share of failures that are format/termination rather than arithmetic"
+  falsified_if: "Fewer than 30% of the failed items lack a well-formed final 'ANSWER: N' line (i.e. the failures are mostly genuine arithmetic/reasoning errors on well-formatted output)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/evaluate.py
+      source: "openai/gsm8k test split, loaded by inspect_evals/gsm8k (measurement input only; no training happens in this card)"
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "first 150 items of the unshuffled test split (--limit 150)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0 (evaluate.py as shipped)"
+    peft: none
+    hyperparams: {}
+    target_format: "n/a - measurement only, no training target"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, unshuffled -> identical item set every run)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of failed items whose completion has no well-formed final 'ANSWER: <number>' line (format/termination failure) vs. items that are well-formatted but numerically wrong"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "measurement-only card; no training"
+  measurements:
+    - metric: accuracy
+      value: 0.06
+      n: 150
+      path: /home/ben/task/eval/exp-01_base_dev150.json
+      delta_vs_comparator: 0.0
+  diagnostic_result:
+    value: 0.773
+    path: /home/ben/task/analysis/exp-01_base_tags.json
+    notes: "109 of 141 failed items (77.3%) have no well-formed final 'ANSWER: <number>' line; 72 of 150 items hit the 4000-token cap (stop_reason=max_tokens) i.e. the model never terminated. Only 32 failures were well-formatted-but-wrong. 9 of the 150 completions that were scored correct/incorrect show the model echoing the few-shot block or drifting into a new problem. vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config' -> grading samples at top_k=64, top_p=0.95, temperature=1.0."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base gemma-3-4b-pt scores 0.060 on dev-150 under the shipped harness. 77% of its failures are format/termination failures (no final ANSWER line, or 4000-token runaway), not arithmetic: the output contract, not math ability, is what the first stage has to fix."
+  decision: iterate
+  next_step: "exp-02: SFT on GSM8K-train-derived data rendered with templates/gemma3.jinja, every target ending 'ANSWER: <n>' + <end_of_turn>, so the model both terminates and puts the graded number last. Also ship generation_config.json with temperature 0 so grading is greedy rather than top_p 0.95 / temp 1.0 sampling."

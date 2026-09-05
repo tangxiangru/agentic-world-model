@@ -1,0 +1,113 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-04T01:42:17Z'
+situation:
+  elapsed_h: 6.5
+  remaining_h: 3.5
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.728, protocol_n: 500}
+  trigger: "Rejection sampling from exp-04 turned up a degeneracy the graded eval hides: 9365 of 15971 sampled solutions that reach the CORRECT answer print the 'ANSWER: N' line twice. match(location='end') reads the last number so it costs nothing at grading, but it says the model's end-of-answer behaviour is unstable, and the same instability is what produces the runaway 0.6% of items."
+  trigger_evidence:
+    - {path: /home/ben/task/data/rft_all.jsonl, locator: "6605 rows kept of 15971 verified-correct samples; the other 9365 were dropped for containing 'ANSWER:' more than once"}
+    - {path: /home/ben/task/analysis/exp-04_final_g500_diag.json, locator: "non_stop_share 0.006"}
+  alternatives_rejected:
+    - {option: "A third full epoch on sft_v2", reason: "the augmented-problem pool is exhausted (60000 of 62938 unique problems already used), so a third pass is mostly re-reading the same problems; exp-04's epoch 2 was already only +1.2"}
+    - {option: "Retrain from base on sft_v2 + RFT (the textbook RFT recipe)", reason: "2.8 h of training with 3.5 h left; it would leave no time to evaluate or package the result"}
+    - {option: "Use all 15971 correct samples including the double-ANSWER ones", reason: "that is the exact defect this card is trying to remove; training on it would teach the habit"}
+    - {option: "Sample more RFT data first", reason: "sampling cost 1.8 h for 16k problems at k=4 and two attempts (one lost to a double-bos bug); there is no time for a third pass"}
+  pitfalls_hit:
+    - {what: "First RFT sampling run used all 29.4k problems at k=6 and would have taken 3.9 h; killed at 6%", cost_h: 0.3, fix: "cut to 16k problems, k=4, max_tokens 512, max_model_len 1024"}
+    - {what: "llm.generate() on a chat-template STRING tokenizes with add_special_tokens=True, so gemma-3 got a second <bos> on top of the template's own", cost_h: 1.0, fix: "pass vllm.TokensPrompt with ids from tok(text, add_special_tokens=False); NOTE the re-run scored LOWER (0.29 vs 0.52 solved-at-least-once) so the double bos is not by itself the explanation for the low solve rate - unresolved, see conclusion"}
+    - {what: "A killed vLLM run leaves an orphan VLLM::EngineCore holding 66 GB of GPU memory; the next job OOMs", cost_h: 0.1, fix: "nvidia-smi --query-compute-apps=pid and kill -9 the pid, not just the python parent"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/rft_mix.jsonl, --output-dir, /tmp/x, --dry-run], outcome: "19.88M tokens, 0 rows over max_seq_len, every target ends in <end_of_turn>"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/rft_mix.decon.jsonl], outcome: "36605 documents scanned, 0 contaminated"}
+problem:
+  statement: "exp-04's outputs are correct 72.8% of the time but sloppy at the end: a majority of its own sampled correct solutions repeat the 'ANSWER: N' line, and 0.6% of greedy generations never stop. All of its training text is 405B-distilled prose it did not itself produce."
+  evidence:
+    - {path: /home/ben/task/data/rft_all.jsonl, locator: "header comment of the build; 9365/15971 dropped", observation: "59% of the model's own correct samples carry a duplicated answer marker"}
+    - {path: /home/ben/task/analysis/exp-04_final_g500_diag.json, locator: "non_stop_share 0.006, graded_accuracy 0.728", observation: "3 of 500 items run to the token cap"}
+  affected_share: 0.59
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-04/final for one epoch at lr 5e-6 on 6605 of its own verified-correct, single-answer-marker chains mixed with 30000 sft_v2 rows raises greedy dev-500 accuracy above 0.728 and lowers the non-stop share."
+  mechanism: "The RFT rows are on-policy - phrasings this model actually produces - and every one of them ends exactly once with 'ANSWER: N' then <end_of_turn>, so the gradient pushes probability mass off the duplicate-answer continuation and onto stopping. The 30k off-policy rows are there to stop the small on-policy set from narrowing the model."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+0.5 to +3 points"
+  falsified_if: "greedy dev-500 accuracy at or below 0.728, or the non-stop share does not fall below 0.006 - the first would say 6.6k on-policy rows are too few to matter, the second would say the duplication is not a stopping problem at all"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix.jsonl
+      source: "synthetic:self (6605 rows sampled from ckpts/exp-04/final) + derived:exp-04 (30000 rows resampled from data/sft_v2.jsonl, i.e. nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e)"
+      n_examples: 36605
+      built_by: /home/ben/task/sample_solutions.py
+      build_command: [python, mix_data.py, --inputs, "data/rft_all.jsonl:0", "data/sft_v2.jsonl:30000", --out, data/rft_mix.jsonl, --seed, '3']
+      selection: "16000 problems (all 7425 openai/gsm8k TRAIN problems plus 8575 augmented_gsm8k problems) sampled k=4 at T=0.8/top_p 0.95, max_tokens 512; keep only chains whose last ANSWER value equals gold AND that finished on a stop token; then drop any target containing 'ANSWER:' more than once; dedup on (question,target); up to 3 chains for problems solved <=2/4 and 1 for easier ones; 10% of rows get a 4-shot and 10% a 10-shot prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer with liger-kernel 0.8.2 fused linear CE"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 32768, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, max_bs: 96}
+    target_format: "identical to exp-02/exp-04: templates/gemma3.jinja + inspect_evals' MATH_PROMPT_TEMPLATE; completion = solution, blank line, 'ANSWER: <int>' exactly once, then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/rft_mix.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --output-dir, /home/ben/task/ckpts/exp-05, --epochs, '1', --lr, '5e-6', --token-budget, '32768', --max-bs, '96', --grad-accum, '2', --max-seq-len, '2816', --save-steps, '0', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+evaluation:
+  protocol:
+    command: [python, eval_model.py, --model-path, '{checkpoint}_greedy', --tag, '{tag}', --limit, '500']
+    dev_set: "official inspect_evals/gsm8k test split --limit 500 (first 500 items, no shuffle), greedy decoding via generation_config.json temperature 0.0"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.728
+    path: /home/ben/task/eval/exp-04_final_g500.json
+  diagnostic:
+    what: "non-stop share on dev-500; must fall below exp-04's 0.006 if the duplicate-answer/stopping story is right"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.38
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 327}
+  training_summary: {final_loss: 0.2555, steps: 327, notes: "1382s wall, 14.4k tokens/s, 19.9M tokens"}
+  measurements:
+    - {metric: accuracy, value: 0.728, n: 500, path: /home/ben/task/eval/exp-05_g500.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.008
+    path: /home/ben/task/analysis/exp-05_g500_diag.json
+    notes: "non-stop share 0.006 -> 0.008 (3 items -> 4 items): no improvement, and the direction is if anything wrong. first_answer_line_accuracy 0.730 -> 0.726."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Greedy dev-500 stayed at exactly 0.728 and the non-stop share did not fall (0.006 -> 0.008). 6.6k on-policy chains, even chosen for a clean single answer marker, are too few to change a model trained on 90k rows - and the duplicate-ANSWER habit seen at T=0.8 is evidently not the same phenomenon as the greedy runaways, so filtering for it bought nothing."
+  decision: reject
+  next_step: "Two data points now say the model is not format- or policy-limited: RFT 0.0 and a 3-checkpoint weight soup +0.4 (probe, /home/ben/task/analysis/soup04_g500_diag.json). The one lever that has moved this benchmark is unique-problem coverage, so spend the remaining budget on a problem pool that is not GSM8K-derived."

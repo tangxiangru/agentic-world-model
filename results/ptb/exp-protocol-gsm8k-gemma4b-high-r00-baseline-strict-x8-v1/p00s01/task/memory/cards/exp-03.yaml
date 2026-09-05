@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T20:59:51Z'
+situation:
+  elapsed_h: 2.0
+  remaining_h: 8.0
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "The eval's request body carries only max_tokens (the model-call request recorded in the inspect log), and the vLLM server logs 'Default sampling parameters have been overridden by the model's Hugging Face generation config'. So dev-150 was scored while SAMPLING at temperature 1.0 / top_k 64 / top_p 0.95 -- values that live in my checkpoint's generation_config.json, not in evaluate.py."
+  trigger_evidence:
+    - path: /home/ben/task/logs/exp-01.log
+      locator: "line containing 'Default sampling parameters have been overridden by the model's Hugging Face generation config'"
+    - path: /home/ben/task/ckpts/exp-02/final/generation_config.json
+      locator: "do_sample true, top_k 64, top_p 0.95, no temperature key (vLLM default 1.0)"
+  alternatives_rejected:
+    - option: "Pass sampling params through evaluate.py"
+      reason: "rule 5 forbids modifying evaluate.py, and it exposes no such flag."
+    - option: "Leave sampling on and train the model to be more peaked"
+      reason: "indirect and expensive; the decode config is one file in my own checkpoint."
+    - option: "Set temperature to a small non-zero value (0.2)"
+      reason: "no reason to keep any stochasticity: the grader reads one sample per item, so variance is pure loss."
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "exp-02 is graded on a single temperature-1.0 sample per item. Every item where the model's greedy path is right but a sampled token derails the arithmetic is lost to noise, and the score is not reproducible run to run."
+  evidence:
+    - path: /home/ben/task/analysis/exp02_dev150_summary.json
+      locator: "all 150 rows"
+      observation: "6/150 completions hit the 4000-token cap in degenerate repetition loops, a failure mode characteristic of sampling"
+    - path: /home/ben/task/logs/exp-01.log
+      locator: "vLLM startup warning"
+      observation: "the server takes its default sampling params from the checkpoint's generation_config.json"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Setting the checkpoint's generation_config.json to greedy decoding (do_sample false, temperature 0.0, no top_k/top_p) raises dev-150 accuracy relative to exp-02's sampled 0.7267, with identical weights."
+  mechanism: "vLLM's OpenAI server fills unspecified sampling params from the model's generation_config; the eval specifies only max_tokens. With temperature 0 the model follows its argmax chain of thought instead of a temperature-1.0 sample of it, which removes both random arithmetic derailments and the sampling-induced repetition loops."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 pts"
+  falsified_if: "dev-150 accuracy at or below exp-02's 0.7267, or the vLLM server ignores the greedy config."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-03-greedy/generation_config.json
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: [python, -c, "json edit of generation_config.json: drop top_k/top_p, do_sample=false, temperature=0.0"]
+      selection: "no training data: this card changes one config file. ckpts/exp-03-greedy symlinks exp-02/final's weights and tokenizer; only generation_config.json is a real, edited file."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vLLM 0.11.0 default_sampling_params from generation_config.json"
+    peft: none
+    hyperparams: {max_seq_len: 4096, seed: 0}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03-greedy, --limit, '150', --max-connections, '16', --json-output-file, /home/ben/task/eval/exp03_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.7267
+    path: /home/ben/task/eval/exp02_dev150.json
+  diagnostic:
+    what: "cap-hits: number of the 150 completions with stop_reason=max_tokens (repetition loops should disappear under greedy decoding)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1248}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are exp-02/final by symlink, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp03_dev150.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.7333, n: 150, path: /home/ben/task/eval/exp03_dev150_rerun.json, delta_vs_comparator: 0.0067}
+  diagnostic_result:
+    value: 0.047
+    path: /home/ben/task/analysis/exp03_dev150_summary.json
+    notes: "cap-hits 7/150 under greedy vs 6/150 sampled -- unchanged. The decisive evidence that the config IS applied is completion identity: greedy-vs-sampled shared 0/150 completions, greedy-vs-greedy shares 87/150 with 9 score flips. Residual non-determinism is vLLM continuous-batching numerics amplified by long chains of thought, not sampling."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "Greedy decoding is genuinely in force (87/150 completions reproduce exactly across two runs, vs 0/150 against the sampled run) but buys at most +0.7 pts: 0.7267 and 0.7333 across two runs against the sampled 0.7267. The +2 to +6 pts claimed was wrong; the sampled decode was not costing much."
+  decision: adopt
+  next_step: "Keep greedy in final_model -- it is free and cuts run-to-run variance. Note for later cards: dev-150 flips ~9 items between identical-weight reruns, so a delta below ~6 pts at n=150 is not readable; use --limit 500 or the held-out dev set for model selection."

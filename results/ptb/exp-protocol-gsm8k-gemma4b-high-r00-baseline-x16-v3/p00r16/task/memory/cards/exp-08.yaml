@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T15:05:00Z'
+situation:
+  elapsed_h: 7.0
+  remaining_h: 3.0
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "exp-07 removed the format failures entirely (150/150 clean answer lines, 0 unterminated, 0 continuations on the official 150), so every remaining error is now reasoning. 64 of 300 probe items are still wrong and none of them is a presentation problem."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-07_format.json, locator: "clean_answer_line=1.0, nonstop=0, continuation=0", observation: "no format headroom is left on the official set"}
+    - {path: /home/ben/task/analysis/exp-07_watch.json, locator: "fixed=90, regressions=14, still_failing=64", observation: "64 probe items fail for reasons the last three cards did not touch"}
+    - {path: /home/ben/task/eval/final_model_dev500.json, locator: "accuracy=0.688, stderr=0.0207", observation: "confirmation at n=500: the incumbent is 0.688 +/- 2.1 pts"}
+  alternatives_rejected:
+    - {option: "A second epoch over exp-07's own 22000 rows", reason: "consolidates a behaviour that is already at 0 continuation failures; there is nothing left for it to fix"}
+    - {option: "A fresh RFT round sampled from exp-07 under the few-shot prompt", reason: "the 10-shot prompt makes vLLM sampling memory-bound at ~9 prompts/s (measured in exp-06); a useful sample count would take over 2h of a 3h budget"}
+    - {option: "Stop here and bank 0.688", reason: "exp-07's checkpoint is already saved as final_model and is not touched by this run; if exp-08 does not beat it on both the probe and the official 150, final_model stays as it is"}
+    - {option: "Use all 213885 mixture rows again", reason: "at 70% few-shot conditioning that is ~370M tokens, roughly 11h"}
+  pitfalls_hit:
+    - {what: "the 10-shot prefix costs ~7x per row in training too: exp-07 ran at 5.5 samples/s against exp-06's 30.6", cost_h: 0.0, fix: "size the row count from the measured 9.3k tokens/s, not from the row count of earlier cards"}
+  smoke_runs: []
+problem:
+  statement: "After exp-07 the model formats and terminates perfectly but still gets 64 of 300 held-out probe items and ~31% of the official test items wrong, on the arithmetic and multi-step reasoning itself. exp-07's supervision was 22000 rows of the model's own already-correct samples, which by construction contain nothing it could not already do."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-07_watch.json, locator: "still_failing=64", observation: "these 64 survived format repair, RFT and few-shot conditioning"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "unsolved=2464 of 15973", observation: "15% of training questions were never solved in 4 samples, so the RFT corpus is blind to exactly the hard cases"}
+    - {path: /home/ben/task/eval/exp-07_probe300.json, locator: "summary.accuracy=0.74", observation: "26% of probes wrong with format fully fixed"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: train-6983, source: /home/ben/task/data/probe300.jsonl, question: "Ferris wheel holds 70 people per 20 minutes, open 1:00pm-7:00pm; how many people ride?", gold: "1260", model_output: "There are 6 hours between 1:00 pm and 7:00 pm, so the Ferris wheel is open for 6 x 20 = 120 minutes ... 6 x 70 = 420\n\nANSWER: 420", failure: "unit conversion: multiplied hours by the 20-minute slot instead of by 60"}
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "first 300 of the last 500 GSM8K *train* items (indices 6973-7272), held out from every training file. Not the benchmark test set."
+hypothesis:
+  claim: "A third stage from exp-07 on 24000 rows that the RFT corpus could not supply - the 7740 RFT rows exp-07 did not see plus 16260 short human/teacher-written mixture solutions - with the 10-shot demo block on 70% of prompts, raises greedy few-shot probe300 accuracy above exp-07's 0.7400."
+  mechanism: "RFT data is bounded by what the model already gets right, so it cannot teach the 15% of questions it never solved. Mixture solutions are written independently of the model and do cover those. Keeping the demo block on 70% of prompts means the new reasoning is learned in the condition the grader uses, so it should not cost back the continuation fix; capping the mixture rows at 1200 characters keeps out the long rambling solutions that caused the exp-04 termination regression."
+  falsified_if: "greedy few-shot probe300 accuracy is at or below exp-07's 0.7400, or answer-then-continue completions rise above 0/300"
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: "+1 to +4 pts"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-07/final
+    origin: exp-07
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_stage3.jsonl
+      source: "derived:exp-06 (7740 RFT rows unseen by exp-07) + openai/gsm8k train, OpenMathInstruct-2 gsm8k/augmented_gsm8k and MetaMathQA GSM rows from data/sft_mix.jsonl filtered to completions of at most 1200 characters"
+      n_examples: 24000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, -c, "unused RFT rows + shuffle(seed=11) of sft_mix rows with len(completion)<=1200, to 24000 total"]
+      selection: "RFT rows keep exp-06's filters; mixture rows keep build_data.py's (one 'ANSWER: <gold><end_of_turn>' at the end, no '####'), plus the 1200-character cap"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, completion-only loss, token-budget micro-batches (scripts/train_sft3.py --fewshot-frac)"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 5.0e-06, epochs: 1, batch_size: 12288, grad_accum: 3, max_seq_len: 3072, scheduler: cosine_with_min_lr_0.1, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "70% of rows rendered with the harness's exact 10-shot system message, 30% zero-shot; target is chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>. batch_size is padded TOKENS per micro-batch."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft3.py, --model, /home/ben/task/ckpts/exp-07/final, --data, data/sft_stage3.jsonl, --out, /home/ben/task/ckpts/exp-08, --lr, '5e-6', --epochs, '1', --fewshot-frac, '0.7', --max-tokens-per-batch, '12288', --max-rows-per-batch, '64', --grad-accum, '3', --max-seq-len, '3072', --warmup, '0.03', --save-steps, '400']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft3.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints:
+    every_steps: 400
+    keep: 3
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-07
+    value: 0.72
+    path: /home/ben/task/eval/exp-07_dev150.json
+  diagnostic:
+    what: "greedy few-shot probe300 accuracy (exp-07: 0.7400) and the answer-then-continue count (exp-07: 0/300)"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.29
+  output_checkpoint: /home/ben/task/ckpts/exp-08/greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08/final, step: 1269}
+    - {path: /home/ben/task/ckpts/exp-08/greedy, step: 1269}
+  training_summary: {final_loss: 0.2084, steps: 1269, notes: "4659s wall, 5.15 samples/s (the 10-shot prefix on 70% of rows dominates the cost)"}
+  measurements:
+    - {metric: accuracy, value: 0.7333, n: 150, path: /home/ben/task/eval/exp-08_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.7633
+    path: /home/ben/task/eval/exp-08_probe300.json
+    notes: "greedy few-shot probe300 0.7400 -> 0.7633 (+2.3). Format held: 0/300 answer-then-continue, 2/300 unterminated, 297/300 clean answer lines, and 150/150 clean with 0 unterminated on the official set. Watch set vs exp-07: 21 fixed, 14 regressed, 57 still failing."
+  watch_set_result: {fixed: 21, still_failing: 57, regressions: 14, path: /home/ben/task/analysis/exp-08_watch.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Adding 16260 independently written mixture solutions and the 7740 unseen RFT rows, still with the demo block on 70% of prompts, gives +2.3 pts on the greedy few-shot probe (0.7400 -> 0.7633) and +1.3 on the official 150 (0.7200 -> 0.7333), with no loss of the format discipline exp-07 bought. The effect is small and both deltas are inside one standard error individually, but they agree in sign across a 300-item paired probe and the official set, and 21 previously-failing probe items were fixed against 14 regressions."
+  decision: adopt
+  next_step: "Shipped: final_model/ = ckpts/exp-08/final weights with generation_config.json set to greedy. With ~1h left the right use of the remaining budget is a confirmation eval of the shipped directory from a fresh process, not another training round."

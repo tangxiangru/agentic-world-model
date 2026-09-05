@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T05:16:10Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 7.4
+  remaining_h: 2.6
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.7142, protocol_n: 1319}
+  trigger: "exp-04 produced a second checkpoint (RFT, 34.7M tokens of self-generated data) that is statistically indistinguishable from the incumbent on the full test set - 0.7119 vs 0.7142 - but which fixes 41 items the incumbent misses while breaking 34 others. Two similar-scoring endpoints of the same trajectory that disagree on 75 items is the standard setting for a weight average."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_final_greedy_full.json, locator: "accuracy 0.7119 (n=1319)"}
+    - {path: /home/ben/task/eval/exp-03_greedy_full.json, locator: "accuracy 0.7142 (n=1319)"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion.summary", observation: "paired on dev-500: 41 fixes / 34 breaks, McNemar exact p=0.49"}
+  alternatives_rejected:
+    - {option: "Another training run", reason: "2.6 h left; the shortest useful SFT run in this setup was 3.2 h and packaging plus a verification eval needs 0.5 h"}
+    - {option: "DPO on the 29.7k incorrect samples from exp-04", reason: "a new method, new hyperparameters and a new failure surface with under 2 h of usable GPU time; the downside risk dominates the upside"}
+    - {option: "Ship exp-03 and stop", reason: "that is the fallback and final_model already holds exp-03 weights, so this experiment risks nothing: it either beats 0.7142 on the full test set or it is discarded"}
+    - {option: "Average exp-04/final with exp-04/checkpoint-550", reason: "both sit on the RFT trajectory a half epoch apart; averaging exp-02/final with exp-04/final spans the two different data distributions and is the more informative test"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "Three checkpoints now score within 0.2 points of each other on the full 1319-item test set (0.7142 / 0.7134 / 0.7119) while disagreeing on individual items, so picking any one of them by its score is picking noise. None of them is better than the others in a way this evidence can support, and there is no time left for a training run that would break the tie by being genuinely stronger."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_greedy_full.json, locator: accuracy, observation: "0.71418 (942/1319), stderr 0.0124"}
+    - {path: /home/ben/task/eval/exp-04_ck550_greedy_full.json, locator: accuracy, observation: "0.71342 (941/1319)"}
+    - {path: /home/ben/task/eval/exp-04_final_greedy_full.json, locator: accuracy, observation: "0.71190 (939/1319)"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "The uniform weight average of exp-02/final and exp-04/final scores higher on the full 1319-item test set than the better of its two parents."
+  mechanism: "The two checkpoints are connected by a low-loss path: exp-04 was initialised from exp-02/final and fine-tuned at 5e-6 for 34.7M tokens, so their weights sit in the same basin. Averaging weights in a shared basin behaves like an ensemble of the two functions at no inference cost, and the two functions demonstrably make different errors (41 items fixed / 34 broken on dev-500). If the errors are partly independent, the average keeps the agreements and moves the disagreements toward whichever prediction is better supported by the weights."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+0 to +2 points; a null result is the likely outcome"}
+  falsified_if: "full-test accuracy is at or below 0.7142, the best parent."
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: "hf://openai/gsm8k@main:test[:1319]"
+      source: openai/gsm8k
+      n_examples: 1319
+      built_by: null
+      build_command: [python, evaluate.py, --limit, "1319"]
+      selection: "read-only benchmark input; this card averages two existing checkpoints and trains nothing"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors uniform weight average, w=0.5"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 0}
+    target_format: "unchanged"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, -c, "python scripts/soup.py /home/ben/task/ckpts/exp-02/final /home/ben/task/ckpts/exp-04/final --out /home/ben/task/ckpts/exp-05-soup --w 0.5 && python scripts/set_gen_config.py /home/ben/task/ckpts/exp-05-soup --mode greedy && bash scripts/run_eval.sh /home/ben/task/ckpts/exp-05-soup exp-05_soup_greedy_full 1319"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/soup.py
+    env: {}
+    log: /home/ben/task/logs/exp-05_soup_greedy_full_eval.log
+  output_dir: /home/ben/task/ckpts/exp-05-soup
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "1319", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items, greedy decode config per exp-03"
+    n: 1319
+    seed: 42
+  comparator: {ref: exp-03, value: 0.7142, path: /home/ben/task/eval/exp-03_greedy_full.json}
+  diagnostic:
+    what: "non-termination share of failures (a bad average can produce degenerate text)"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.14
+  output_checkpoint: /home/ben/task/ckpts/exp-05-soup
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05-soup, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; uniform 0.5/0.5 average of exp-02/final and exp-04/final"}
+  measurements:
+    - {metric: accuracy, value: 0.7127, n: 1319, path: /home/ben/task/eval/exp-05_soup_greedy_full.json, delta_vs_comparator: -0.0015}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-05_soup_greedy_full_failure_tags.json
+    notes: "0 of 379 failures carry text after the first 'ANSWER:' line; the average is a well-behaved model, just not a better one"
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "The 0.5/0.5 average scores 0.7127 on the full test set against 0.7142 for the better parent - falsified as stated, and the fourth checkpoint in a row to land inside 0.712-0.714. The two parents' disagreements are not independent errors that averaging can cancel; they are the same model sampling either side of a decision boundary."
+  decision: reject
+  next_step: "Ship exp-03 (SFT + greedy decode, 0.7142 on all 1319 items) as final_model. The three post-SFT interventions tried - RFT, a half epoch less RFT, and a weight average - all landed inside one stderr of it, so nothing here justifies displacing the simplest candidate."

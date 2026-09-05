@@ -1,0 +1,144 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T03:39:12Z'
+situation:
+  elapsed_h: 5.7
+  remaining_h: 4.3
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score:
+      metric: accuracy
+      value: 0.7210
+      protocol_n: 1319
+  trigger: "23 of final_model's 1319 completions (1.7%) end with stop_reason=max_tokens: greedy repetition loops that run to the 4000-token cap and are therefore scored wrong by construction. Greedy decoding introduced this failure mode - the sampled runs had none - and it is 1.7 points of headroom reachable from generation_config.json alone."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-07_final_model_tags.json
+      locator: "23 records with stop='max_tokens'; malformed_share_of_failures 0.062"
+    - path: /home/ben/task/analysis/exp-02_ep2_tags.json
+      locator: "truncated (max_tokens): 0 under temperature-1.0 sampling on the same 150 items"
+  alternatives_rejected:
+    - option: "Leave it: 1.7% is small"
+      reason: "It is one eval (about 8 min) to test, it is free at inference time, and every one of those 23 items is currently a guaranteed miss rather than a coin flip."
+    - option: "Retrain to suppress loops"
+      reason: "A decoding-side fix costs 8 minutes and a training-side fix costs over an hour, for a failure mode that is a property of greedy decoding rather than of the weights."
+    - option: "A larger penalty (1.1-1.2)"
+      reason: "Arithmetic chains legitimately repeat numbers and phrases ('So the total is', unit words, the same operand twice), so a strong penalty risks distorting correct reasoning. 1.05 is the mild end; if it helps, a sweep would be the follow-up, and if it hurts the incumbent config is unchanged."
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "Under greedy decoding final_model falls into non-terminating repetition on 23 of 1319 items. Those completions never emit <end_of_turn>, get cut at the 4000-token cap, and the scorer reads whatever number happens to be last - so they are scored wrong regardless of whether the reasoning up to the loop was right."
+  evidence:
+    - path: /home/ben/task/analysis/exp-07_final_model_tags.json
+      locator: "records with stop='max_tokens' (23 of 1319)"
+      observation: "these are the only remaining non-arithmetic failures in the deliverable"
+    - path: /home/ben/task/analysis/exp-06_exp02greedy_tags.json
+      locator: "15 truncations in 500 items (3.0%) for the exp-02 weights under the same greedy config"
+      observation: "the rate is a property of greedy decoding on this model family, not of one checkpoint"
+  affected_share: 0.062
+  failure_examples:
+    - id: "exp-07 truncated items (23)"
+      source: /home/ben/task/analysis/exp-07_final_model_tags.json
+      question: "see records[] with stop=max_tokens"
+      gold: various
+      model_output: "a reasoning chain that starts repeating a sentence or a computation until the 4000-token cap"
+      failure: "no terminator, no final ANSWER line, scored wrong by construction"
+  watch_set:
+    path: /home/ben/task/analysis/exp-07_final_model_tags.json
+    n: 23
+    selection: "all full-split items whose completion hit the token cap"
+hypothesis:
+  claim: "Adding repetition_penalty 1.05 to final_model's generation_config.json reduces the number of token-cap truncations on the full split and does not lower overall accuracy."
+  mechanism: "A repetition penalty down-weights tokens already present in the context, which is exactly what breaks a greedy loop: once the loop's tokens have been emitted a few times their logits are discounted enough for the next-best continuation - typically the sentence that ends the chain - to win. At 1.05 the discount is small enough that a first-time correct token is essentially unaffected."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: "+0 to +1.5 points; at most the 23 truncated items are recoverable and some of them are wrong for other reasons too"
+  falsified_if: "full-split accuracy is below the incumbent's 0.7210, or the truncation count does not fall below 23."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/evaluate.py
+      source: "openai/gsm8k test split via inspect_evals, all 1319 items (measurement only; no training in this card)"
+      n_examples: 1319
+      built_by: null
+      build_command: []
+      selection: "the complete unshuffled test split (--limit 1319)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 --generation-config auto; vllm/config/model.py:1368 confirms repetition_penalty is one of the keys read from generation_config.json"
+    peft: none
+    hyperparams:
+      repetition_penalty: 1.05
+      temperature: 0.0
+      max_seq_len: null
+    target_format: "unchanged; weights are symlinks to final_model, only generation_config.json differs"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-08_reppen, --limit, '1319', --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-08_reppen_full.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08_reppen
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.2
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file, '{out}']
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-07
+    value: 0.7210
+    path: /home/ben/task/eval/exp-07_final_model_full.json
+  diagnostic:
+    what: "number of stop_reason=max_tokens completions (23 for the incumbent) and how many of those 23 items become correct"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-08_reppen
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08_reppen, step: 500}
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "no training; weights symlinked to final_model, only generation_config.json differs"
+  measurements:
+    - metric: accuracy
+      value: 0.7195
+      n: 1319
+      path: /home/ben/task/eval/exp-08_reppen_full.json
+      delta_vs_comparator: -0.0015
+  diagnostic_result:
+    value: 25
+    path: /home/ben/task/analysis/exp-08_watch_rerun.json
+    notes: "Total truncations went UP, 23 -> 25. Of the incumbent's 23 truncated items the penalty rescued 5 and left 8 still looping, while introducing new loops elsewhere. The wider effect is churn without direction: 111 items fixed, 113 broken - the penalty perturbs roughly 1 item in 6 and gains nothing net."
+  watch_set_result:
+    fixed: 5
+    still_failing: 18
+    regressions: 113
+    path: /home/ben/task/analysis/exp-08_watch_rerun.json
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "repetition_penalty 1.05 scores 0.7195 vs the incumbent's 0.7210 and raises truncations from 23 to 25, so both halves of the claim fail. The loops are not simple token repetition that a mild context penalty breaks, and the penalty is not as harmless to correct chains as assumed: it flips 224 of 1319 items in both directions."
+  decision: reject
+  next_step: "final_model keeps the plain greedy generation_config. The 1.7% truncation rate stays as a known, unfixed residual failure mode; a bigger penalty would perturb even more of the correct chains, so the remaining time goes to the one substantive intervention not yet tried, rejection-sampling fine-tuning (exp-09)."

@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T17:04:57Z'
+situation:
+  elapsed_h: 7.3
+  remaining_h: 2.7
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/greedy
+    score:
+      metric: accuracy
+      value: 0.74
+      protocol_n: 150
+  trigger: "Three checkpoints now sit inside one stderr of each other under the same protocol (exp-03 0.740, exp-04 0.720, exp-05 0.720) but disagree strongly at item level: of the 61 dev-150 items at least one of them gets wrong, only 22 are wrong in all three. Two further training stages (off-policy corpus, on-policy RFT) each failed to beat the parent, so the remaining signal is in combining what they learned, not in another stage."
+  trigger_evidence:
+    - path: /home/ben/task/analysis/exp-05_dev150.json
+      locator: "compared against analysis/exp-03_greedy.json and analysis/exp-04_dev150.json: 61 items wrong in at least one, 22 wrong in all three"
+    - path: /home/ben/task/memory/index.md
+      locator: "exp-03 0.74, exp-04 0.72, exp-05 0.72"
+  alternatives_rejected:
+    - option: "A third training stage on yet another corpus"
+      reason: "2.7 h left; a stage is 1.5 h plus an eval, and the last two stages each returned -2 points. There would be no time left to score the result properly or to fall back."
+    - option: "Just ship exp-03 as the best dev-150 score"
+      reason: "That is the fallback and it is already assembled in final_model/, but 0.740 vs 0.720 is 3 items against a stderr of 0.037, so picking on dev-150 alone is close to picking at random. A soup costs 8 minutes of GPU and gives a fourth, genuinely different candidate."
+    - option: "Include exp-03/greedy in the soup as a fourth term"
+      reason: "exp-03 is weight-identical to exp-02/final (it differs only in generation_config.json), so including both would silently double exp-02's weight to 0.5. exp-02/final is in the soup as the shared parent."
+    - option: "Search soup weights (e.g. 0.5/0.25/0.25) on dev-150"
+      reason: "Tuning mixture weights on the same 150 items used to report the score is selection on noise; with one eval slot left, the uniform average is the choice that needs no tuning."
+  pitfalls_hit: []
+  smoke_runs:
+    - command: [python, scripts/soup.py, --models, ckpts/exp-02/final, ckpts/exp-04/final, ckpts/exp-05/final, --out, ckpts/exp-06/soup3]
+      outcome: "883 tensors averaged in fp32 and written back as bf16 across both shards; config, tokenizer and a greedy generation_config copied alongside."
+problem:
+  statement: "The three candidate checkpoints are statistically tied on dev-150 but make different mistakes: 39, 42 and 42 items wrong respectively, with only 22 items wrong in all three. Choosing one of them by its dev-150 score is choosing on a 3-item difference against a 0.037 stderr, and whichever is chosen throws away whatever the other two learned."
+  evidence:
+    - path: /home/ben/task/analysis/exp-03_greedy.json
+      locator: "39 wrong of 150"
+      observation: "the parent's failure set"
+    - path: /home/ben/task/analysis/exp-04_dev150.json
+      locator: "42 wrong of 150; 13 of exp-03's failures fixed, 16 of its successes broken"
+      observation: "the MetaMathQA stage moved 29 items but netted -3"
+    - path: /home/ben/task/analysis/exp-05_dev150.json
+      locator: "42 wrong of 150; 8 of exp-03's failures fixed, 11 of its successes broken"
+      observation: "the RFT stage moved 19 items and netted -3"
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "A uniform weight average of exp-02/final, exp-04/final and exp-05/final scores higher on greedy dev-150 than the best of its three ingredients (0.740)."
+  mechanism: "exp-04 and exp-05 are both one short, low-learning-rate epoch away from exp-02, so all three sit in one loss basin and their weights are linearly connectable; averaging them is well defined rather than a collision of unrelated solutions. Under that condition the average cancels the stage-specific idiosyncrasies that each child picked up - MetaMathQA's phrasing in one, its own decoding habits in the other - while keeping the shared component, which is the part that actually solves the problems. The item-level churn is the evidence that the idiosyncratic components are large and mostly independent, which is exactly when averaging pays."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +4 points on dev-150"
+  falsified_if: "greedy dev-150 accuracy is at or below 0.740, or the well-formed-answer-line rate falls below 0.99 (which would mean the average broke the output protocol and the checkpoints were not in one basin after all)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/eval_fewshot_10.jsonl
+      source: "openai/gsm8k (config main, split train, shuffle seed 42, first 10)"
+      n_examples: 10
+      built_by: null
+      build_command: []
+      selection: "the 10 few-shot exemplars inspect_evals/gsm8k builds into the system message; TRAIN split only. This card averages existing weights and trains on nothing, so these are the only data the run reads."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors shard-wise uniform average in fp32, written back as bf16 (scripts/soup.py)"
+    peft: none
+    hyperparams: {n_models: 3, weight_each: 0.3333, precision: bf16, accum_precision: fp32}
+    target_format: "unchanged; all three ingredients were trained on the same rendered format"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-06/soup3, --limit, '150', --max-connections, '16', --json-output-file, /home/ben/task/eval/exp-06_soup_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.2
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle); the checkpoint ships temperature 0.0 so decoding is greedy, as in exp-03 to exp-05"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.74
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "share of completions ending in a well-formed 'ANSWER: <n>' line - a weight average that left the basin would show up here first"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.25
+  output_checkpoint: /home/ben/task/ckpts/exp-06/soup3
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/soup3, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; 883 tensors averaged in fp32 across the two shards and written back as bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.7267, n: 150, path: /home/ben/task/eval/exp-06_soup_dev150.json, delta_vs_comparator: -0.0133}
+  diagnostic_result:
+    value: 0.9933
+    path: /home/ben/task/analysis/exp-06_soup.json
+    notes: "149/150 well-formed answer lines and one item (0.7%) hitting the token cap - the first non-zero truncation since exp-01. The average is still clearly inside the basin, but it is very slightly less well-behaved than any single ingredient, all of which were at 1.00 and 0.00."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Soup 0.7267 against the parent's 0.740: above both children (0.720) but below exp-03, so the falsification threshold is met. Averaging recovered roughly half of what each child gave up rather than combining their strengths - it fixes 9 of exp-03's failures and breaks 11 - which says the children's differences are mostly noise around a common solution, not complementary skills."
+  decision: reject
+  next_step: "Four candidates now lie within 2 points of each other on 150 items (0.740 / 0.7267 / 0.720 / 0.720), which the protocol cannot resolve. exp-07 re-scores the two leaders, exp-03 and the soup, at --limit 500 and the winner becomes final_model."

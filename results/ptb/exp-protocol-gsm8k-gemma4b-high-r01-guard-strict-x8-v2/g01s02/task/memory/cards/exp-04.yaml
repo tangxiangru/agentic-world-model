@@ -1,0 +1,103 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T12:12:00Z'
+situation:
+  elapsed_h: 2.25
+  remaining_h: 7.75
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.62, protocol_n: 150}
+  trigger: "The next training card (rejection-sampling SFT) has to choose an epoch count, and exp-02 gives no evidence either way: it ran 2 epochs and only the 2-epoch endpoint was scored. exp-02 kept checkpoint-470 (0.86 epochs), so the question can be answered with one 5-minute eval instead of a second 1.7-hour training run."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "result.training_summary: 1092 steps over 2 epochs; checkpoints_kept lists checkpoint-470"}
+    - {path: /home/ben/task/logs/exp-02.log, locator: "logged loss 0.639 (step 10) -> 0.263 (step 1092)", observation: "loss is still falling at the end of epoch 2, which does not distinguish learning from memorising 69k rows seen twice"}
+  alternatives_rejected:
+    - {option: "Assume 2 epochs is right and move on", reason: "if epoch 1 already matches epoch 2, the RFT run can be 1 epoch and buy back an hour of the remaining 7.75"}
+    - {option: "Retrain for 1 epoch to get a clean 1-epoch checkpoint", reason: "1.7 h of GPU for a question a kept checkpoint can answer in 5 minutes; the caveat that checkpoint-470 sits mid-cosine (lr still ~5e-6) is recorded in the conclusion"}
+  pitfalls_hit:
+    - {what: "Trainer intermediate checkpoints have no tokenizer/processor files (no processing_class was passed), so vllm cannot load checkpoint-470 directly", cost_h: 0.02, fix: "ckpts/exp-02/ep1 symlinks checkpoint-470's weights plus final/'s tokenizer and processor files"}
+  smoke_runs: []
+problem:
+  statement: "It is not known whether the second epoch over data/sft_v2.jsonl bought accuracy or only lower training loss. Without that, the epoch count of every later training card is a guess, and each guess costs 1-2.5 hours of the remaining budget."
+  evidence:
+    - {path: /home/ben/task/logs/exp-02.log, locator: "train_loss 0.292, final logged loss 0.263", observation: "loss keeps falling through epoch 2; on a 69k-row corpus with <=4 solutions per problem this is as consistent with memorisation as with learning"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scoring exp-02's 0.86-epoch checkpoint (checkpoint-470) under the same protocol will show whether the extra epoch moved dev-150 accuracy; the intervention being tested is training length, not any change to data or method."
+  mechanism: "If the corpus is large and diverse relative to the model, a single pass captures most of the gain and further passes mainly reduce training loss on rows already fit."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "epoch 2 expected to be equal to or up to 4 points above epoch 1; a tie means later runs can be 1 epoch"
+  falsified_if: "checkpoint-470 scores materially above exp-02's 0.620, which would mean the second epoch is harming the model (overfitting) rather than helping"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/checkpoint-470
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "unchanged from exp-02 - this card trains nothing, it scores a checkpoint exp-02 already produced"
+      n_examples: 69282
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python3, scripts/build_data.py, --out, data/sft_v1.jsonl]
+      selection: "no new data"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: other
+    framework: inspect_ai + vllm 0.11.0
+    peft: none
+    hyperparams: {epochs: 0.86, seed: 0}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/ep1, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-04_ep1_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.62
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: null
+    n: null
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.09
+  output_checkpoint: /home/ben/task/ckpts/exp-02/ep1
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/ep1, step: 470}
+  training_summary: {final_loss: null, steps: 470, notes: "no training; scores exp-02's kept checkpoint-470 (0.86 epochs) with final/'s tokenizer symlinked in. Decoded with the same stochastic generation_config exp-02 was scored under, so the comparison is like for like."}
+  measurements:
+    - {metric: accuracy, value: 0.6133, n: 150, path: /home/ben/task/eval/exp-04_ep1_dev150.json, delta_vs_comparator: -0.0067}
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "0.86 epochs scores 0.6133 against 2 epochs' 0.6200: a 0.7-point gap on n=150 (stderr ~0.040), i.e. indistinguishable. The second epoch over sft_v2 bought training loss (0.40 -> 0.26) and no measurable accuracy."
+  decision: reject
+  next_step: "Later training cards spend the budget on more unique rows at 1 epoch rather than on repeats. Caveat for the next reader: checkpoint-470 sits mid-cosine with lr still ~5e-6, so a purpose-built 1-epoch run with a completed schedule could be slightly better than 0.6133 - the conclusion 'epoch 2 adds nothing' is safe, 'epoch 1 is exactly as good' is the weaker reading."

@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T01:48:01Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 3.9
+  remaining_h: 6.1
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.658, protocol_n: 500}
+  trigger: "The vLLM server log for every eval so far prints 'Default sampling parameters have been overridden by the model's Hugging Face generation config' - evaluate.py never passes a temperature, so the benchmark is being scored on a temperature-1.0 top_p-0.95 top_k-64 SAMPLE inherited from the base snapshot's generation_config.json, not on the model's best guess."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-01_base_dev150.log, locator: "'Default sampling parameters have been overridden by the model's Hugging Face generation config'"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample=true, top_k=64, top_p=0.95 (inherited verbatim from the base snapshot)"}
+    - {path: /home/ben/task/evaluate.py, locator: "lines 74-86: inspect_eval(...) passes max_tokens and max_connections only; no temperature"}
+  alternatives_rejected:
+    - {option: "Pass a temperature on the evaluate.py command line", reason: "there is no such flag and evaluate.py is immutable (rule 5); the decode config has to live in the model directory"}
+    - {option: "Skip this and spend the time on more training", reason: "it is one eval (about 6 minutes) and it changes what every later checkpoint is measured under; getting it wrong would silently cost points on the final submission"}
+    - {option: "Leave sampling on and rely on it as regularisation", reason: "single-sample stochastic decoding on a numeric-match benchmark can only add variance; there is no majority vote to recover it"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "GenerationConfig.from_pretrained round-trip with do_sample=false, temperature=0.0"], outcome: "loads without error; to_diff_dict() contains temperature: 0.0, which is one of the six keys vLLM's ModelConfig.get_diff_sampling_param() reads, so vLLM will decode greedily"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "exp-02/final is graded on a single temperature-1.0 sample. On a benchmark scored by exact numeric match of one greedy-length chain of thought, any token sampled off the mode can derail an otherwise correct derivation, and there is no second sample to recover from it. The size of that loss is unmeasured."
+  evidence:
+    - {path: /home/ben/task/logs/exp-02_final_dev150_eval.log, locator: "'Default sampling parameters have been overridden by the model's Hugging Face generation config'", observation: "the sampling override fires for the fine-tuned checkpoint too - it inherited generation_config.json from the base snapshot"}
+    - {path: /home/ben/task/eval/exp-02_final_dev150.json, locator: "accuracy", observation: "0.680 at n=150 vs 0.658 at n=500 for the same checkpoint - run-to-run spread consistent with stochastic decoding"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Writing temperature 0.0 into the checkpoint's generation_config.json (greedy decoding) raises dev-500 accuracy relative to the same weights decoded with the inherited do_sample=true / top_k=64 / top_p=0.95."
+  mechanism: "vLLM's ModelConfig.get_diff_sampling_param() reads temperature, top_k, top_p, min_p, repetition_penalty and max_new_tokens out of the model directory's generation_config.json and uses them as server defaults for requests that do not specify their own. inspect specifies none. Setting temperature 0.0 and dropping top_k/top_p therefore switches the graded decode from a temperature-1.0 sample to argmax, which maximises the probability of the single chain of thought the model considers most likely."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +6 points"}
+  falsified_if: "greedy dev-500 accuracy is not above the sampled 0.658 by more than one stderr (0.021), i.e. it comes in at or below 0.679."
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: "hf://openai/gsm8k@main:test[:500]"
+      source: openai/gsm8k
+      n_examples: 500
+      built_by: null
+      build_command: [python, evaluate.py, --limit, "500"]
+      selection: "read-only benchmark input; this card changes a decode config, it trains nothing"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default_sampling_params from generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, -c, "cp -r /home/ben/task/ckpts/exp-02/final /home/ben/task/ckpts/exp-03-greedy && python scripts/set_gen_config.py /home/ben/task/ckpts/exp-03-greedy --mode greedy && bash scripts/run_eval.sh /home/ben/task/ckpts/exp-03-greedy exp-03_greedy_dev500 500"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/set_gen_config.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_greedy_dev500_eval.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official inspect_evals/gsm8k test split via --limit 500 (first 500 items, no shuffle)"
+    n: 500
+    seed: 42
+  comparator: {ref: exp-02, value: 0.658, path: /home/ben/task/eval/exp-02_final_dev500.json}
+  diagnostic:
+    what: "non-termination share of failures (must stay at ~0; greedy decoding of a repetitive model can loop)"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.11
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1724}
+  training_summary: {final_loss: null, steps: null, notes: "no training: exp-02/final weights byte-for-byte, only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.712, n: 500, path: /home/ben/task/eval/exp-03_greedy_dev500.json, delta_vs_comparator: 0.054}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-03_greedy_dev500_failure_tags.json
+    notes: "0 of 144 failures carry text after the first 'ANSWER:' line; greedy decoding did not introduce repetition loops"
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, one JSON file changed: dev-500 0.658 -> 0.712 (+5.4 pts, 2.6 stderr). The benchmark really was being scored on a temperature-1.0 sample inherited from the base snapshot, and 5 points were sitting in the decode config. No repetition-loop regression (non-termination share stays 0.000)."
+  decision: adopt
+  next_step: "Every later checkpoint - and final_model - ships with the greedy generation_config. Remaining 144 failures at n=500 are maths errors, so exp-04 goes after them with rejection-sampling fine-tuning on the model's own correct solutions."

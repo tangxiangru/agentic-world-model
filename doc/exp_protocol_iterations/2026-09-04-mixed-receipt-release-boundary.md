@@ -1,0 +1,13 @@
+# Mixed-state held receipt: release boundary, not release authorization
+
+2026-09-04. Read-only source/receipt investigation and CPU mock regression tests. No release, cancellation, source receipt rewrite or scheduler mutation was performed for this finding.
+
+The strict-baseline [receipt](../../results/ptb/exp-protocol-gsm8k-gemma4b-high-r00-baseline-strict-x8-v1/formal-2026-09-02T210823.064737+0000.json) still records original held intent for all8 jobs, but the current harvested cohort contains completed p00s01–03/jobs90823–90825 and5 actual held p00s04–08/jobs90826–90830. These mixed states arose before this audit; the final three original-wave outcomes have already been harvested.
+
+`awm.ptb_experiments.release_held` first checks ownership/native reservation, then requires **every receipt job** to be PENDING before inspecting its hold reason and frozen ReqNodeList. Thus changing that old queue entry to `want: submitted` would still be refused on completed90823 even if native isolation were restored. The remaining5 are scientifically specified held work, not a currently executable whole-receipt release plan.
+
+New regression `test_held_receipt_release_refuses_mixed_state_without_mutating_receipt` exercises a two-job analogue with the first job COMPLETED, RUNNING or UNKNOWN and the second PENDING. Ownership and native-node gates are mocked valid so the tested refusal is specifically mixed state. In all three cases the exact original receipt bytes are unchanged and no release command is sent. All7 `held_receipt_release` tests pass, including existing native-isolation, ReqNodeList and explicit-override cases. No live Slurm command is called by the test.
+
+This records the existing safety contract; it does not silently change it to skip terminal jobs, claim the real native gate is fixed, or authorize an ad-hoc `scontrol release90826,...`. Before choosing these5 as the next released work, explicitly design and validate a receipt-backed mixed-state disposition with immutable original job membership, exact held targets, independently revalidated ownership/node/hold gates and an audit trail. Alternatively sequence already-valid all-held receipts while this limitation is resolved. Do not duplicate these5 into a new batch without deciding the original queued work's disposition, and do not cancel cells from this partly-started cohort as though it were an entirely unstarted screen.
+
+The current30-held /22-excluding-D-and-staleE accounting still counts these5 as genuine held cells. No new completed/clean result or protocol candidate is created by this CPU test, and the six shipped scientist paths and PTB commit remain unchanged.

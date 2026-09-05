@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T21:23:56Z'
+situation:
+  elapsed_h: 2.9
+  remaining_h: 7.1
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0733, protocol_n: 150}
+  trigger: "exp-02 scored 0.060 under the harness but 0.76 on an offline probe with a bare prompt (logs/diag_stop.log): the model is good at the maths and stops correctly, and loses everything to the harness's 10-shot prefix, where it keeps generating further question/answer pairs (0.12)."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/diag_stop.log, locator: "[fewshot10] / [zeroshot] lines", observation: "greedy, 100 held-out dev items: acc 0.12 with the 10-shot prefix vs 0.76 without"}
+    - {path: /home/ben/task/analysis/exp-02_format_fail.json, locator: format_fail_share, observation: "0.83 of harness completions do not end in a well-formed ANSWER line"}
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: accuracy, observation: "0.060 on n=150"}
+  alternatives_rejected:
+    - {option: "Change the eval prompt / disable few-shot", reason: "evaluate.py and templates/ are immutable and the harness always uses fewshot=10"}
+    - {option: "Retrain from base with the mixed prompt distribution", reason: "exp-02 already learned the maths (0.76 bare-prompt); a short continuation is ~1 h instead of ~2.5 h and keeps that ability"}
+    - {option: "Set eos/stop tokens differently in the checkpoint (decode-side fix)", reason: "the model already emits <end_of_turn> correctly when the prompt is bare - the offline probe stops on it - so this is not a stop-token-id problem but a prompt-distribution problem"}
+    - {option: "Train prefixed rows only", reason: "keeping ~43% zero-shot rows protects the bare-prompt behaviour and adds fresh Orca-Math problems the model has not seen"}
+  pitfalls_hit:
+    - {what: "trainer.save_model() does not copy preprocessor_config.json / processor_config.json, and vLLM refuses to load a Gemma3ForConditionalGeneration checkpoint without an image processor ('Can't load image processor')", cost_h: 0.2, fix: "copy both files from the base snapshot into every saved checkpoint before evaluating"}
+    - {what: "An interactive python heredoc running vLLM hit the 30-minute Bash tool timeout and was killed", cost_h: 0.5, fix: "write the probe to a script and run it with setsid nohup, polling the log"}
+    - {what: "The backgrounded vLLM probe process stayed alive after printing its results and held 64 GiB, so the first training launch OOMed instantly", cost_h: 0.1, fix: "pkill the probe and confirm nvidia-smi shows 0 MiB before launching a run"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --bs, '8', --accum, '4', --max-seq-len, '2304'], outcome: "OOM in cross_entropy (16.24 GiB): 8 x 2304 tokens x 262k vocab logits do not fit; relaunched at bs 4 / accum 8 with expandable_segments, 3.06 s/step, 60.9 GiB in use"}
+    - {command: [python, scripts/diag_stop.py], outcome: "greedy probe on 100 dev items: zero-shot 0.76 / few-shot-10 0.12; confirmed the model stops at <end_of_turn> when the prompt is bare"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_fewshot_mix_full_decon.jsonl], outcome: "35000 documents (prompt incl. few-shot block + target) scanned, 0 contaminated"}
+problem:
+  statement: "The graded prompt is a 10-shot block of question/Reasoning/ANSWER examples followed by the real question. exp-02 was trained only on bare prompts, so in that context it continues the in-context pattern: it answers, then writes a new question and answers that too. inspect_ai reads the LAST number of the completion, so a correct answer followed by an invented extra problem scores as wrong."
+  evidence:
+    - {path: /home/ben/task/logs/diag_stop.log, locator: "SAMPLE line under [fewshot10]", observation: "completion ends mid-way through an invented follow-up problem's instruction block"}
+    - {path: /home/ben/task/analysis/exp-02_format_fail.json, locator: "examples", observation: "83% of harness completions end in continuation text rather than an ANSWER line"}
+  affected_share: 0.83
+  failure_examples:
+    - {id: h-1, source: /home/ben/task/logs/2026-09-03T20-39-46+00-00_gsm8k_D9u8qgLqCVKgTb8GuZzHgU.json, question: "Amir and Cody cookies item (harness sample 1)", gold: "20", model_output: "... So together they eat 15 + 5 = 20 cookies.\n\nANSWER: 20\n\nSolve the following math problem step by step ... (invents a new muffin problem)", failure: "correct answer, then continues; last number belongs to the invented problem"}
+    - {id: h-2, source: /home/ben/task/logs/2026-09-03T20-39-46+00-00_gsm8k_D9u8qgLqCVKgTb8GuZzHgU.json, question: "oranges item (harness sample 2)", gold: "17", model_output: "= 25 - 8 = 17 ... ANSWER: 17\n\nSolve the following math problem ... (invents a marbles problem)", failure: "same over-continuation"}
+    - {id: h-3, source: /home/ben/task/logs/2026-09-03T20-39-46+00-00_gsm8k_D9u8qgLqCVKgTb8GuZzHgU.json, question: "bees item (harness sample 3)", gold: "400", model_output: "ANSWER: 700 then a new train problem", failure: "wrong answer AND over-continuation"}
+  watch_set:
+    path: /home/ben/task/data/dev_train300.jsonl
+    n: 300
+    selection: "last 300 rows of the GSM8K TRAIN split, excluded from every training file by question text; the offline probe re-scores its first 100 under both prompt styles"
+hypothesis:
+  claim: "Continuing SFT from ckpts/exp-02/final on a mixture whose majority of rows carry a harness-style few-shot prefix (k ~ U{1,8} GSM8K-train examples in the harness's own question/Reasoning/ANSWER format) makes the model answer only the final question and stop, raising harness accuracy at n=150 far above exp-02's 0.060 and near the 0.76 the model already reaches on bare prompts."
+  mechanism: "The over-continuation is an in-context pattern-completion habit, not a missing stop token: the model emits <end_of_turn> correctly after bare prompts. Showing it prefixed prompts whose target ends right after the first ANSWER line teaches it that the prefix is context, not a pattern to extend."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+50 points or more (0.060 -> 0.6-0.8)"}
+  falsified_if: "harness n=150 accuracy stays below 0.40, or the offline few-shot probe stays below 0.50 while the zero-shot probe stays near 0.76"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_fewshot_mix.jsonl
+      source: "derived:exp-02 data (nvidia/OpenMathInstruct-2 gsm8k-derived) + microsoft/orca-math-word-problems-200k + openai/gsm8k train (few-shot blocks only)"
+      n_examples: 35000
+      built_by: /home/ben/task/scripts/prep_fewshot.py
+      build_command: [python, scripts/prep_fewshot.py, --prefix-src, data/sft_train.jsonl, --plain-src, data/orca.jsonl, --n-prefix, '20000', --n-plain, '15000', --max-shots, '8', --out, data/sft_fewshot_mix.jsonl]
+      selection: "20000 rows from the exp-02 corpus re-rendered with a k~U{1,8} few-shot prefix drawn from GSM8K TRAIN gold solutions in the harness's own format (question, blank line, 'Reasoning:', gold reasoning with its <<..>> annotations, blank line, 'ANSWER: N'), joined by blank lines and separated from the real prompt by a blank line - byte-for-byte how inspect's system message reaches the user turn through templates/gemma3.jinja; plus 15000 unseen Orca-Math rows with bare prompts"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, full fine-tune, bitsandbytes adamw_8bit
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 2304, scheduler: cosine_with_min_lr_0.1, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "same as exp-02: target = solution, blank line, 'ANSWER: <number>', then <end_of_turn>; loss on target tokens only. Only the user turn changes (few-shot prefix on 57% of rows)."
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [env, 'PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True', python, scripts/train_sft.py, --model, ckpts/exp-02/final, --data, data/sft_fewshot_mix.jsonl, --out, ckpts/exp-03, --epochs, '1', --lr, '7e-6', --bs, '4', --accum, '8', --max-seq-len, '2304']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-03_train.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.06
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "offline greedy probe on the first 100 dev_train300 items, few-shot-10 prompt (exp-02: 0.12) and zero-shot (exp-02: 0.76)"
+    n: 100
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.18
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1092}
+  training_summary: {final_loss: 0.284, steps: 1092, notes: "train_runtime 4234 s, 8.25 samples/s, 1 epoch over 34999 rows (1 dropped over max_seq_len 2304)"}
+  measurements:
+    - {metric: accuracy, value: 0.6267, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: 0.5667}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-03_format_fail.json
+    notes: "format-fail share 0/150 (exp-02: 0.83, base: 0.78). Every harness completion now ends in a well-formed 'ANSWER: <number>' line, so the remaining 37% of failures are arithmetic/reasoning errors, not over-continuation."
+  watch_set_result:
+    fixed: null
+    still_failing: null
+    regressions: null
+    path: /home/ben/task/analysis/exp-03_format_fail.json
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Harness accuracy 0.060 -> 0.6267 (+56.7 points, n=150) after one hour of continued SFT on 20k few-shot-prefixed rows + 15k fresh bare-prompt Orca rows. The mechanism check is unambiguous: over-continuation went from 83% of completions to 0%, exactly as predicted, so the loss really was an in-context pattern-completion habit rather than maths or a stop-token id."
+  decision: adopt
+  next_step: "exp-04: decode-config - the harness inherits sampling defaults from the checkpoint's generation_config.json (vLLM logs 'Default sampling parameters have been overridden by the model's HF generation config'), which is still the base model's do_sample/top_k 64/top_p 0.95 at temperature 1.0. Score the same checkpoint with a greedy generation_config under the same protocol."

@@ -1,0 +1,96 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-05T03:17:37Z'
+situation:
+  elapsed_h: 4.7
+  remaining_h: 5.3
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.527, protocol_n: 150}
+  trigger: "exp-06 (RFT, 2 epochs, loss 0.29) had best capability (first-answer 53%) but 55% continuation dropped it to 0.307. Stopping is a monotonic function of loss under the eval's 10-shot continuation prior (0.38->0%, 0.29->55%, 0.14->99%)."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "result.diagnostic_result: cont 55% first 53% at loss 0.29"}
+  alternatives_rejected:
+    - {option: "few-shot-augmented training (root-cause fix)", reason: "more robust but ~2h; try the cheap 1-epoch sweet-spot first, keep few-shot as fallback"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The RFT data gives 53% first-answer capability but 2 epochs over-trains (loss 0.29) and breaks stopping. I need to stop training at exp-02's moderate-loss regime (~0.38) where continuation was 0%."
+  evidence:
+    - {path: /home/ben/task/eval/exp-06_greedy_dev150.json, locator: "accuracy=0.307", observation: "over-trained RFT lost to continuation"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Training the RFT union for 1 epoch (instead of 2) lands loss near exp-02's ~0.38, keeping continuation near 0 while retaining ~53% capability, so greedy dev-150 beats exp-03's 0.527."
+  mechanism: "Fewer optimizer steps => higher (less over-fit) loss => the stop-token prior still beats the 10-shot continuation prior at the answer boundary; RFT data still lifts capability over plain GSM8K."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.0 to +0.05 (expect 0.52-0.56); low continuation"
+  falsified_if: "continuation rate > 15% or greedy dev-150 accuracy < 0.50"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_sft.jsonl
+      source: "derived:openai/gsm8k train (human) + synthetic:self (exp-02 rejection-sampled, exp-05)"
+      n_examples: 24106
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02, --n, "6"]
+      selection: "union human + self-correct (<=3/question), dedup"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, full FT of text LM (vision frozen)"
+    peft: "none"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 768, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, optim: paged_adamw_8bit}
+    target_format: "prompt (MATH_PROMPT_TEMPLATE) via gemma3.jinja; assistant = CoT + newline ANSWER: N + <end_of_turn>; completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/rft_sft.jsonl, --out, /home/ben/task/ckpts/exp-07, --lr, "1e-5", --epochs, "1", --batch, "16", --grad-accum, "2", --max-seq-len, "768"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-07-greedy, --limit, "150", --json-output-file, /home/ben/task/eval/exp-07_greedy_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.527
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic: {what: "continuation rate (should be < 15%)", n: 150, metric: accuracy, direction: higher}
+result:
+  execution: completed
+  wall_h: 0.75
+  output_checkpoint: /home/ben/task/ckpts/exp-07
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07, step: 753}
+  training_summary: {final_loss: 0.33, steps: 753, notes: "train_loss 0.330; 0 truncated"}
+  measurements:
+    - {metric: accuracy, value: 0.46, n: 150, path: /home/ben/task/eval/exp-07_greedy_dev150.json, delta_vs_comparator: -0.067}
+  diagnostic_result: {value: 0.02, path: /home/ben/task/eval/exp-07_greedy_dev150.json, notes: "continuation_rate=2% (stopping preserved!) but first_answer_correct dropped to 44% (under-trained). 1 epoch = good stopping, low capability; 2 epochs = high capability, broken stopping. No epoch sweet-spot exists."}
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "1-epoch RFT keeps stopping (2% cont) but capability falls to 44% (0.46 < 0.527). Confirms capability and stopping trade off against training amount; tuning epochs cannot get both. Need to decouple stopping from training amount."
+  decision: iterate
+  next_step: "exp-08: few-shot-augmented training (prepend k random GSM8K-train shots in eval format to ~half the examples) so the model learns to stop after the FINAL answer regardless of preceding Q/A blocks; then 2 epochs of RFT data can reach 53% capability WITH low continuation."

@@ -133,5 +133,5 @@ def test_one_card_end_to_end_with_the_shipped_code(cell) -> None:
     collected = _awm(checkout, task, "exp_protocol", "collect", d, "--csv")
     assert collected.returncode == 0
     header, row = collected.stdout.strip().splitlines()
-    assert header.startswith("session,accuracy,n_cards")
-    assert row.startswith("ben/task,0.5,1,")
+    assert header.startswith("session,accuracy,hours_used,n_cards")
+    assert row.startswith("ben/task,0.5,,1,")  # hours_used is empty without time_taken.txt

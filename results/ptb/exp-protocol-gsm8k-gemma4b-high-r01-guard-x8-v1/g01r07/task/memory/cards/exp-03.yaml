@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T21:04:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 2.65
+  remaining_h: 7.35
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/checkpoint-1820
+    score: {metric: accuracy, value: 0.61333, protocol_n: 150}
+  trigger: "exp-02's second epoch made things worse (0.6133 -> 0.5733) while its format effect was already complete at epoch 1 (no_stop_maxtokens 0/150 at both). More gradient steps over the same 58k rows is negative; the question this card asks is whether more UNIQUE rows at the same 1-epoch budget is positive."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp02_e1_dev150.json, locator: "accuracy 0.61333 (1 epoch, step 1820)"}
+    - {path: /home/ben/task/eval/exp02_e2_dev150.json, locator: "accuracy 0.57333 (2 epochs, step 3640)"}
+    - {path: /home/ben/task/analysis/exp02_e1_tags.json, locator: "tag counts", observation_note: "92 correct, 58 reasoning_wrong, 0 format failures of any kind"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling fine-tuning from checkpoint-1820 now", reason: "also worth doing, but it is the cheaper move (~1.7 h) and composes on top of whichever SFT checkpoint wins; run the expensive data-scaling card first while there is slack, then RFT from the winner in exp-04"}
+    - {option: "Raise the k-shot fraction above 6% so training matches the grader's always-10-shot prompt", reason: "measured, not assumed: the probe on 400 held-out augmented_gsm8k problems scores the incumbent HIGHER with the 10-shot prefix (0.730) than without it (0.688), so there is no train/eval prompt mismatch to fix and the 5x token cost is not worth paying"}
+    - {option: "Lower the learning rate as well as scaling the data", reason: "two interventions in one card; lr stays at 1e-5 so the delta is attributable to unique data alone"}
+    - {option: "Three epochs on the 58k corpus", reason: "exp-02 already showed epoch 2 is negative; epoch 3 would be worse"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/probe.py, --model, ckpts/exp-02/checkpoint-1820, --n, "400"], outcome: "held-out augmented_gsm8k greedy: 10-shot 0.730 (11/400 hit the 768-token probe cap), 0-shot 0.6875 (1/400). The few-shot prefix helps rather than hurts."}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/sft_big_check.jsonl], outcome: "148352 documents scanned, 0 contaminated, 0 matches"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's remaining 58 dev-150 failures are all reasoning failures - the chain is well formed, terminates correctly and carries exactly one ANSWER line, but the arithmetic or the problem reading is wrong. exp-02 exhausted its 58k-row corpus in one pass, so accuracy is limited by how many distinct correct chains the model has seen, not by how long it trained."
+  evidence:
+    - {path: /home/ben/task/analysis/exp02_e1_tags.json, locator: "tag=reasoning_wrong", observation: "58/150; 0 items with any format or termination fault"}
+    - {path: /home/ben/task/eval/exp02_e2_dev150.json, locator: "accuracy 0.57333", observation: "a second pass over the same rows loses 4 pts and raises reasoning_wrong from 58 to 64 - memorisation, not learning"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "e1-reason-1", source: /home/ben/task/analysis/exp02_e1_tags.json, question: "(dev item, gold 50; Henry's cookies)", gold: "50", model_output: "...he would have 110 - 5 = 105 cookies / 105/2 = 52.5 / made 52 ... ANSWER: 26", failure: "misreads the relation, then compounds it"}
+    - {id: "e2-reason-1", source: /home/ben/task/analysis/exp02_e2_tags.json, question: "(dev item, gold 17; oranges)", gold: "17", model_output: "25 x .2 = 5 unripe / 25 x .02 = 0.5 = 1 bad / 2+1+5+1 = 9 not good / 25 - 9 = 16 ... ANSWER: 16", failure: "double-counts one category; arithmetic itself is fine"}
+    - {id: "e1-reason-2", source: /home/ben/task/analysis/exp02_e1_tags.json, question: "(dev item; see tag file for the remaining 56)", gold: "(various)", model_output: "(well-formed chain, wrong number)", failure: "representative of the 58 reasoning_wrong items"}
+  watch_set:
+    path: /home/ben/task/analysis/exp02_e1_tags_watch.jsonl
+    n: 58
+    selection: "every dev-150 item the incumbent (exp-02 checkpoint-1820) got wrong"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Training from the same base checkpoint for one epoch on 148,352 unique rows - 2.5x exp-02's corpus, built by the same script with the same formatting and the same 1e-5 cosine schedule - scores higher on dev-150 than exp-02's 1-epoch 0.6133."
+  mechanism: "exp-02's epoch-2 regression says the model memorises rows rather than extracting more from them, so the useful signal per row is spent after one pass. The OpenMathInstruct-2 augmented_gsm8k pool was only 25% used (35k of 138k); raising it to 110k gives ~2.5x the distinct verified chains at the same cost per row, and the extra gradient steps land on data the model has not seen instead of data it has."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +6 pts on dev-150; less than +2 would mean the corpus is already at the point of diminishing returns for a 4B model"}
+  falsified_if: "dev-150 accuracy is at or below exp-02's 0.6133, or the reasoning_wrong count stays at or above 58 of 150."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_big.jsonl
+      source: "openai/gsm8k train split + nvidia/OpenMathInstruct-2 train_1M + meta-math/MetaMathQA (all train-side; no GSM8K test item is read at any point)"
+      n_examples: 148352
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_big.jsonl, --check-out, data/sft_big_check.jsonl, --n-aug-gsm, "110000", --n-omi-gsm, "14764", --n-mm-ansaug, "12000", --n-mm-rephrased, "12000", --n-mm-sv, "2500", --n-mm-fobar, "2500", --n-math, "9000", --max-per-question, "2"]
+      selection: "109970 omi2_augmented_gsm8k, 11780 metamath_GSM_Rephrased, 7473 gsm8k_train, 7425 omi2_gsm8k, 6000 omi2_augmented_math, 2477 metamath_GSM_SV, 2461 metamath_GSM_FOBAR, 757 omi2_math, 9 metamath_GSM_AnsAug. Same formatting rules as exp-02 (plain-number answers only, calculator spans stripped, one answer marker per target); dedup now allows at most 2 distinct solutions per question instead of 1, which is what lets OpenMathInstruct-2's 405B-written chains for the GSM8K train problems in alongside the original human ones. 8901 rows (6%) carry the grader's exact 10-shot system prefix."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, custom CompletionOnlyTrainer.compute_loss"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3328, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>. Identical to exp-02: templates/gemma3.jinja (sha256 7de1c58e...), add_special_tokens=False, loss on completion tokens only."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_big.jsonl, --out, ckpts/exp-03, --epochs, "1", --lr, "1e-5", --bs, "16", --accum, "2", --max-seq-len, "3328", --save-steps, "2300", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 2300
+    keep: all      # checkpoint-2300 (~half epoch), checkpoint-4600, final; exp-04 branches from the best
+  budget: {gpu: H100-80GB, planned_h: 2.3}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test stream, --limit 150 (first 150 items in dataset order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.61333
+    path: /home/ben/task/eval/exp02_e1_dev150.json
+  diagnostic:
+    what: "reasoning_wrong count in the tagged per-sample log (58/150 for the incumbent) plus greedy accuracy on the 400 held-out augmented_gsm8k problems, 10-shot (0.730 for the incumbent) - the held-out probe has 2.7x the items of dev-150 and so resolves a small delta the 150-item eval cannot"
+    n: 400
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.14
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 4636}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-4600, step: 4600}
+  training_summary: {final_loss: 0.2891, steps: 4636, notes: "train_runtime 7708 s, 19.2 samples/s, 69.2M tokens in the epoch; 2 of 148352 rows dropped over max_seq_len (0.001%). Final train loss 0.2891 vs exp-02's 0.2907 - essentially identical despite 2.5x the rows."}
+  measurements:
+    - {metric: accuracy, value: 0.60667, n: 150, path: /home/ben/task/eval/exp03_dev150.json, delta_vs_comparator: -0.00667}
+  diagnostic_result:
+    value: 0.765
+    path: /home/ben/task/analysis/exp03_probe.json
+    notes: "reasoning_wrong 58 -> 59 of 150: unchanged. But on the 400-item held-out augmented_gsm8k probe exp-03 clearly beats the incumbent: 10-shot 0.730 -> 0.765, 0-shot 0.688 -> 0.755. The extra data DID make the model better - on the distribution the extra data came from. It did not transfer to real GSM8K test items."
+  watch_set_result: {fixed: 23, still_failing: 35, regressions: 24, path: /home/ben/task/analysis/exp03_tags.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.6133 -> 0.6067 (-0.7 pts, well inside the +/-4 pt stderr): 2.5x the unique rows bought nothing on the target benchmark, and reasoning_wrong stayed at 58-59 of 150. The watch-set split is the sharpest evidence that this is churn rather than progress - 23 of the incumbent's 58 failures fixed against 24 fresh regressions."
+  decision: reject
+  next_step: "Two things point the same way. The 24-fix/24-regression churn says the two checkpoints are the same model with different noise, and the probe says the added rows improved augmented_gsm8k (0.730 -> 0.765) while leaving real GSM8K flat - so scaling augmented_gsm8k, which is 74% of the big corpus, moves the model AWAY from the target distribution as fast as it teaches it arithmetic. exp-04 therefore stops adding off-distribution data and goes on-policy instead: rejection-sample the incumbent on GSM8K-train problems under the grader's own prompt, keep only chains that reach the reference answer, and fine-tune on those."

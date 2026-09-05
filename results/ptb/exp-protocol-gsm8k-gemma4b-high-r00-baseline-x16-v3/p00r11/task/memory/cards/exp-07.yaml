@@ -1,0 +1,117 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T04:07:38Z'
+situation:
+  elapsed_h: 6.2
+  remaining_h: 3.8
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.6414, protocol_n: 1319}
+  trigger: "The identical weights scored 0.6543 as ckpts/exp-03/final and 0.6414 as final_model on the same 1319 items: a 1.3-point swing between two runs of one model, which means the grader is not decoding greedily."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_ep2_full.json, locator: "accuracy=0.6543"}
+    - {path: /home/ben/task/eval/final_model_full.json, locator: "accuracy=0.6414 (same weights, copied directory)"}
+    - {path: /home/ben/task/logs/2026-09-03T03-45-59+00-00_gsm8k_9Pi6MrKSC4jpWAR6NShxQh.json, locator: "eval.model_generate_config", observation: "only timeout, max_connections and max_tokens are set - inspect sends no temperature, so the vLLM server falls back to defaults read from the model's own generation_config.json (do_sample true, top_k 64, top_p 0.95, no temperature -> vLLM default 1.0)"}
+  alternatives_rejected:
+    - {option: "Another RFT round on a hard-focused corpus", reason: "~1 h for a likely 1-2 point gain, against ~5 min here for the gap between temperature-1.0 sampling and greedy decoding, which on GSM8K is usually several points"}
+    - {option: "Leave the decode config alone on principle", reason: "generation_config.json is part of the model artifact, not the harness; evaluate.py and templates/ stay untouched, and that file is exactly where a model declares how it should be decoded"}
+    - {option: "Pass a temperature through evaluate.py", reason: "evaluate.py is immutable and exposes no such flag"}
+  pitfalls_hit:
+    - {what: "assumed for six hours that the eval decoded greedily; every dev-150 comparison in exp-02..exp-05 was therefore one noisy sample per item, which is part of why the dev-150 ranking (0.687 > 0.680 > 0.660) inverted at n=1319 (0.654 > 0.640 > 0.633)", cost_h: 0.0, fix: "read eval.model_generate_config in the inspect log; decode config is part of the artifact under test from here on"}
+  smoke_runs: []
+problem:
+  statement: "The submitted model is decoded with temperature-1.0 nucleus sampling because its generation_config.json declares do_sample true with no temperature and the harness overrides nothing. Every graded answer is one random sample rather than the model's most likely answer, which both lowers the expected score and adds ~1.3 points of run-to-run noise at n=1319."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_ep2_full.json, locator: "accuracy=0.6543", observation: "run 1 of the identical weights"}
+    - {path: /home/ben/task/eval/final_model_full.json, locator: "accuracy=0.6414", observation: "run 2 of the identical weights: 17 items decided differently"}
+    - {path: /home/ben/task/analysis/rft_v1_stats.json, locator: "sample_accuracy=0.7135 vs pass_at_k=0.9105", observation: "this model's sampled answers are far less reliable than its best-of-4, so sampling gives away accuracy that the mode retains"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Setting temperature 0.0 (greedy, top_k 1) in final_model/generation_config.json raises full-test accuracy above the 0.6414 the same weights scored under the sampled default."
+  mechanism: "With match(numeric=True) scoring a single completion, the score is the probability that one sample is right; greedy decoding instead returns the mode of the distribution, which for a model whose per-sample accuracy (0.71) sits far below its pass@4 (0.91) is the better read-out. It also removes the sampling variance that made the last four comparisons unreliable."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: incumbent
+    magnitude: "+2 to +6 points at n=1319"
+  falsified_if: "greedy scores at or below 0.6414 at n=1319"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: "hf://openai/gsm8k:main:test"
+      source: openai/gsm8k
+      n_examples: 1319
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '-1']
+      selection: "evaluation input only, no training in this card: the full official test set as the harness reads it; 10-shot exemplars come from the gsm8k TRAIN split (seed 42)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: generation_config.json edit (temperature 0.0, top_k 1); weights unchanged
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: chain of thought, 'ANSWER: <number>' as the last line, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, final_model, --limit, '-1', --json-output-file, /home/ben/task/eval/final_model_greedy_full.json, --max-connections, '16', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.3
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --json-output-file, '{out}.json', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official full test set (1319 items)
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.6414
+    path: /home/ben/task/eval/final_model_full.json
+  diagnostic:
+    what: "well-formed-and-stopped share under greedy decoding (greedy can loop instead of stopping; must stay >= 0.99)"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.35
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 1406}
+  training_summary: {final_loss: null, steps: null, notes: "no training; generation_config.json in each candidate directory set to do_sample false, temperature 0.0, top_k 1, top_p 1.0. Weights untouched, evaluate.py and templates/ untouched."}
+  measurements:
+    - {metric: accuracy, value: 0.702, n: 1319, path: /home/ben/task/eval/final_model_greedy_full.json, delta_vs_comparator: 0.0606}
+    - {metric: accuracy, value: 0.6967, n: 1319, path: /home/ben/task/eval/exp-03_ep1_greedy_full.json, delta_vs_comparator: 0.0568}
+    - {metric: accuracy, value: 0.6876, n: 1319, path: /home/ben/task/eval/exp-05_greedy_full.json, delta_vs_comparator: 0.0545}
+    - {metric: accuracy, value: 0.6869, n: 1319, path: /home/ben/task/eval/exp-02_greedy_full.json, delta_vs_comparator: 0.0804}
+    - {metric: accuracy, value: 0.6763, n: 1319, path: /home/ben/task/eval/exp-04_greedy_full.json, delta_vs_comparator: 0.0417}
+  diagnostic_result:
+    value: 0.989
+    path: /home/ben/task/analysis/final_model_greedy_full_summary.json
+    notes: "1306/1319 completions stop cleanly under greedy; 13 loop to the 4000-token cap, the one failure mode greedy adds. Median output 324 chars."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy decoding is worth +6.1 points on the full test set for the same weights (0.6414 -> 0.7020), and every candidate gains 4-8 points from it. The ranking is stable under greedy: exp-03/final 0.702 > exp-03/checkpoint-702 0.697 > merge 0.688 ~ exp-02 0.687 > exp-04 0.676, so final_model keeps exp-03/final's weights and now also declares greedy decoding."
+  decision: adopt
+  next_step: "exp-08: one more STaR round sampled from this 0.702 model, judged under greedy at n=1319 - the only comparisons that have proven trustworthy. Greedy also introduces 13 non-terminating completions, which a further round on self-samples that all end in <end_of_turn> should reduce."

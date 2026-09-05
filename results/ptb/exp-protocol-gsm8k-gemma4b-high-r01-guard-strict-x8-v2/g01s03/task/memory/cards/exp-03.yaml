@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T11:17:55Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 1.3
+  remaining_h: 8.5
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5867, protocol_n: 150}
+  trigger: "The eval log says 'Default sampling parameters have been overridden by the model's Hugging Face generation config' - so the grader is sampling at do_sample=true, top_k=64, top_p=0.95, temperature 1.0, because that is what the base gemma-3-4b-pt generation_config.json says and exp-02 inherited it verbatim."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-01_baseline.log, locator: "APIServer line 'Default sampling parameters have been overridden by the model's Hugging Face generation config'"}
+    - {path: /home/ben/task/logs/2026-09-03T11-08-34+00-00_gsm8k_cp5FExJipX7EMdE2bNaRP5.json, locator: "sample 4", observation: "'6 + 4 + 18 = 28 + 18 = 46' - the model writes the correct total 28 and then corrupts it, which reads like a sampling excursion rather than a reasoning error"}
+  alternatives_rejected:
+    - {option: "Leave the sampled decoding and just train more", reason: "free points are cheaper than GPU-hours; this costs one 10-minute eval and the training run can start immediately after"}
+    - {option: "Set a low-but-nonzero temperature (0.2)", reason: "one shot per item is scored, so the argmax path is the right choice; a partial fix would need its own comparison and the eval budget is better spent on training"}
+    - {option: "Ask evaluate.py for greedy decoding", reason: "rule 5 forbids modifying evaluate.py; the generation_config inside the model directory is the supported knob and is part of the artefact I ship"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [ln, -s, ../exp-02/final/*, ckpts/exp-03_greedy/], outcome: "weight/tokenizer files symlinked, only generation_config.json is a real file - the intervention is exactly one file"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-02 is graded with stochastic decoding (temperature 1.0, top_p 0.95, top_k 64) inherited from the base model's generation_config, so a single sampled path decides each item. 62/150 items are wrong and at least some are sampling excursions inside otherwise correct reasoning."
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-03T11-08-34+00-00_gsm8k_cp5FExJipX7EMdE2bNaRP5.json, locator: "sample 4 (target 28)", observation: "'Therefore the total number of pets is 6 + 4 + 18 = 28 + 18 = 46' - correct sum emitted, then a spurious continuation"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "do_sample true, top_k 64, top_p 0.95, no temperature -> vLLM default 1.0"}
+  affected_share: null
+  failure_examples:
+    - {id: sample-4, source: /home/ben/task/logs/2026-09-03T11-08-34+00-00_gsm8k_cp5FExJipX7EMdE2bNaRP5.json, question: "dev-150 item 4 (Marcia/Cindy/Jan pets)", gold: "28", model_output: "... 6 + 4 + 18 = 28 + 18 = 46 ... ANSWER: 46", failure: "writes the right total then extends the arithmetic"}
+    - {id: sample-2, source: /home/ben/task/logs/2026-09-03T11-08-34+00-00_gsm8k_cp5FExJipX7EMdE2bNaRP5.json, question: "dev-150 item 2 (bees)", gold: "400", model_output: "700/2 = 350 baby bees ... 350/2 = 175 worker bees ... ANSWER: 175", failure: "misreads the relation; a genuine reasoning error, not decoding"}
+    - {id: sample-7, source: /home/ben/task/logs/2026-09-03T11-08-34+00-00_gsm8k_cp5FExJipX7EMdE2bNaRP5.json, question: "dev-150 item 7 (hospital profit)", gold: "10000", model_output: "... revenue is also 200 * 150 = $30,000 ... ANSWER: 0", failure: "copies the cost rate into the revenue term"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Shipping a greedy generation_config (temperature 0.0, do_sample false) with the exp-02 weights raises dev-150 accuracy relative to exp-02's sampled 0.5867, with no change to the weights."
+  mechanism: "One sample per item is scored. Under temperature 1.0 every token is a lottery over a 262k vocabulary; the argmax path avoids low-probability excursions inside an otherwise correct chain."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +8 points"}
+  falsified_if: "greedy dev-150 accuracy is at or below 0.5867"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/mix_v2_30k.jsonl
+      source: "derived:exp-02 (the same file exp-02 trained on; nothing new is trained here)"
+      n_examples: 30000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/mix_v2.jsonl, --n-gsm8k, "7473", --n-omi2, "60000", --n-metamath, "15000", --n-orca, "15000", --fewshot-frac, "0.2", --max-target-tokens, "640"]
+      selection: "unchanged from exp-02; listed only because the weights come from it. This card trains nothing."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 default sampling params, read from the model directory's generation_config.json"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: reasoning, blank line, 'ANSWER: <number>', <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03_greedy, --limit, "150", --max-connections, "16", --json-output-file, /home/ben/task/eval/exp-03_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_eval.log
+  output_dir: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5867
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "median completion length in characters (greedy chains should not get longer) and the count of items exp-02 got wrong that greedy now gets right"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 938}
+  training_summary: {final_loss: null, steps: null, notes: "no training; the exp-02 weights are symlinked and only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.68, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.0933}
+  diagnostic_result:
+    value: 474.0
+    path: /home/ben/task/logs/2026-09-03T11-21-49+00-00_gsm8k_bsXCGF3FYzPaHdgf3xxbvR.json
+    notes: "median completion 474 chars vs 465 sampled, so chains did not lengthen. Item-level: 29 items exp-02 got wrong are now right, 15 right ones are now wrong, net +14 = +9.3 points. 2/150 hit max_tokens (greedy can loop); stderr 0.0382."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, one changed file: dev-150 0.5867 -> 0.6800 (+9.3 points, and +14 items net). The grader was sampling at temperature 1.0 because vLLM adopts the model directory's generation_config as its default sampling params; the argmax path is worth more than any single training change so far."
+  decision: adopt
+  next_step: "Every checkpoint from here ships the greedy generation_config, and every later comparator is measured with it (exp-03's 0.68 is the new comparator). Next: scale the SFT data - only 30k of the available gsm8k-style CoT was used; mix_v3 has 114,602 rows (contamination check: 0/114602)."

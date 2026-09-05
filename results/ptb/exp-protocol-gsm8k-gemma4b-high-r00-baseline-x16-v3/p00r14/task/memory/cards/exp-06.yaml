@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T06:03:00Z'
+situation:
+  elapsed_h: 8.05
+  remaining_h: 1.95
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.6596, protocol_n: 1319}
+  trigger: 'exp-05 trained to completion (loss 0.2977 -> 0.2713, the descent its hypothesis predicted) and then lost the weights at save time; the intervention has still never been scored. 1.95 h remain.'
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: 'result.failure', observation: 'GenerationConfig.validate(strict=True) refuses do_sample=False with temperature 0.0; only config.json was written'}
+    - {path: /home/ben/task/logs/exp-05.log, locator: 'train_runtime line', observation: '1142/1142 steps, train_loss 0.2713 vs exp-04 0.2977'}
+  alternatives_rejected:
+    - {option: 'Rerun exp-05 unchanged at 85k rows', reason: '1.2 h of training plus a save, a full-test eval and card closing does not fit in 1.95 h; 55k rows costs ~47 min and leaves ~50 min of margin'}
+    - {option: 'Ship exp-04 and stop', reason: 'exp-04 is already installed in final_model and stays there unless this run scores higher on the full test set, so the only thing at risk is GPU time. Abandon rule: if no checkpoint exists at T-35 min, exp-04 ships.'}
+    - {option: 'Resume from the exp-05 optimiser state', reason: 'nothing was written but config.json - there is no state to resume from'}
+  pitfalls_hit:
+    - {what: 'trainer.save_model() raised after a completed 1.2 h run because the parent checkpoint carried the greedy generation_config that exp-03 introduced; HF validates GenerationConfig strictly on save and rejects do_sample=False alongside temperature 0.0', cost_h: 1.3, fix: 'train_sft.py now resets model.generation_config to HF defaults before saving and save_loadable() writes the greedy values back as plain JSON, so the crash cannot recur and the manual set_decode_config step is no longer needed'}
+  smoke_runs: []
+problem:
+  statement: 'exp-04 answers 66% of the full test set correctly; 437 of its 449 failures are a wrong number inside a well-formed chain. Reading them, the model sets up the wrong quantity (train-95 adds the iron nickels'' value back after already counting it), mis-reads which quantity the question asks for (train-220 answers gallons for 600 miles when asked for the extra gallons needed), or substitutes into its own algebra wrongly (train-289 solves 7x+15=301 correctly then evaluates the wrong expression). These are precision failures on problems the corpus already covers, not gaps in coverage.'
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_full_tags.json, locator: 'summary.tags', observation: '437 of 449 failures tagged wrong_number; median completion 308 chars'}
+    - {path: /home/ben/task/analysis/exp-04_probe250.json, locator: 'samples[] correct=false', observation: '61 of 250 held-out train items wrong greedy, all well-formed chains with a wrong final number'}
+  affected_share: 0.97
+  failure_examples:
+    - {id: train-95, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'Alice has 20 quarters. She wants to exchange them for nickels and so she goes to the bank. After getting back from the bank, she discovers that 20% of the nickels are iron nickels worth $3 each. What is the total value of her money now?', gold: '64', model_output: 'the value of the non-iron nickels is $500 - 12 = 488 ... total is 488 + 12 = 490 ... ANSWER: 490', failure: 'works in dollars where it should work in cents and double-counts the iron nickels'}
+    - {id: train-220, source: /home/ben/task/data/dev_heldout250.jsonl, question: "A car uses 20 gallons of gas to travel 400 miles. Mr. Montero's car has 8 gallons in it. How many more gallons of gas does he need to travel 600 miles, back and forth?", gold: '52', model_output: '...he needs 30 - 8 = 22 gallons more to travel 600 miles ... ANSWER: 22', failure: 'ignores "back and forth", so it solves for 600 miles instead of 1200'}
+    - {id: train-289, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'Jim collects model cars, and he has 301 models total. Jim has 4 times as many Buicks as Fords, and 3 more than twice the number of Fords than Chevys. How many Buicks does Jim have?', gold: '220', model_output: 'x=40 ... So Jim has 4(2*40+3)=320 Buicks ... ANSWER: 320', failure: 'sets up and solves the equation correctly, then substitutes into the wrong expression'}
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_watch.jsonl
+    n: 61
+    selection: 'every held-out GSM8K train item exp-04 gets wrong under greedy decoding (61 of 250, analysis/exp-04_probe250.json)'
+hypothesis:
+  claim: 'A second pass from exp-04 over an 85k-row uniform subsample of the same corpus, with a fresh cosine schedule at lr 5e-6, raises full-test accuracy above exp-04''s 0.6596.'
+  mechanism: 'exp-04 stopped with its loss still falling, so the corpus is not yet fit. A second pass at half the learning rate continues descending on data it has already seen once, which sharpens the step-by-step precision that the wrong_number failures lack, without introducing new distribution the model would have to absorb from scratch.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: '+1 to +3 pts on the full 1319-item test set'
+  falsified_if: 'full-test accuracy at or below exp-04''s 0.6596, or the held-out probe below 0.756 - either would mean the second pass is fitting the corpus rather than the task, and exp-04 ships.'
+hypothesis:
+  claim: 'A second pass from exp-04 over a 55k-row uniform subsample of the same corpus, with a fresh cosine schedule at lr 5e-6, raises full-test accuracy above exp-04 0.6596.'
+  mechanism: 'exp-04 stopped with its loss still falling, so the corpus is not yet fit. A second pass at half the learning rate continues descending on data it has already seen once, sharpening the step-by-step precision the wrong_number failures lack, without new distribution to absorb. exp-05 confirmed the loss part of this (0.2977 -> 0.2713); what is untested is whether that translates into accuracy.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: '+1 to +3 pts on the full 1319-item test set, and less than exp-05 would have given: 55k rows is a shorter second pass than 85k'
+  falsified_if: 'full-test accuracy at or below exp-04 0.6596, which would mean the second pass fits the corpus rather than the task - exp-04 then ships unchanged.'
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v4_sub55k.jsonl
+      source: 'derived:exp-04 - a uniform 55000-row subsample (seed 2) of data/sft_v4.jsonl, which is openai/gsm8k train + OpenMathInstruct-2 GSM + MetaMathQA GSM + exp-02 rejection samples'
+      n_examples: 55000
+      built_by: /home/ben/task/scripts/mix_data.py
+      build_command: [python, '-c', "random.Random(2).sample(open('data/sft_v4.jsonl').readlines(), 55000)"]
+      selection: 'uniform subsample without replacement, so sft_v4 mixture proportions are preserved. Smaller than exp-05 only because of the deadline; sft_v4 passed the contamination checker at 179045/179045 documents clean.'
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: 'transformers 4.57.3 Trainer with a custom token-budget batch sampler'
+    peft: 'none (full fine-tune of the language model; vision_tower and multi_modal_projector frozen)'
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 8192, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 2}
+    target_format: 'step-by-step reasoning, blank line, "ANSWER: <int>", then <end_of_turn>; prompt rendered with templates/gemma3.jinja and inspect_evals MATH_PROMPT_TEMPLATE; 5% of rows carry the grader exact 10-shot system message'
+    stop_token: '<end_of_turn>'
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, -u, scripts/train_sft.py, --model, /home/ben/task/ckpts/exp-04/final, --data, data/sft_v4_sub55k.jsonl, --out, /home/ben/task/ckpts/exp-06, --lr, '5e-6', --epochs, '1', --max-seq-len, '2816', --fewshot-frac, '0.05', --token-budget, '8192', --grad-accum, '4', --warmup, '0.02', --seed, '2']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.85}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '16', --gpu-memory-utilization, '0.8']
+    dev_set: 'official --limit 1319 (the whole openai/gsm8k test split via inspect_evals/gsm8k, fewshot=10 seed=42), decoded greedily'
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.6596
+    path: /home/ben/task/eval/exp-04_greedy_full.json
+  diagnostic:
+    what: 'no probe this time - the deadline leaves room for one eval, and the full 1319-item test set is both the decision metric and the larger sample'
+    n: null
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.82
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 738}
+  training_summary: {final_loss: 0.273, steps: 738, notes: 'train_loss 0.2727 over the pass, against exp-04''s 0.2977 on the same mixture; 19.5 rows/s. The save-path fix held: generation_config.json was written greedy automatically, so no manual set_decode_config step was needed.'}
+  measurements:
+    - {metric: accuracy, value: 0.6672, n: 1319, path: /home/ben/task/eval/exp-06_greedy_full.json, delta_vs_comparator: 0.0076}
+    - {metric: accuracy, value: 0.6733, n: 150, path: /home/ben/task/eval/final_model_dev150.json, delta_vs_comparator: null}
+  diagnostic_result:
+    value: 10
+    path: /home/ben/task/eval/exp-06_greedy_full.json
+    notes: 'paired item-level comparison against exp-04 on the same 1319 items: 74 fixed, 64 broken, net +10, McNemar z = 0.85 - the right sign but not resolved at this sample size. Against exp-03: 129 fixed, 96 broken, net +33, z = 2.20.'
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-04_watch.jsonl}
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: 'Full-test accuracy 0.6596 -> 0.6672 (+0.76 pts), the direction the hypothesis predicted, but the paired McNemar z of 0.85 does not separate it from exp-04: 74 items fixed against 64 broken. The loss half of the mechanism held again (0.2977 -> 0.2727); whether that is what moved the score is untested, since the deadline left room for one eval and no held-out probe.'
+  decision: adopt
+  next_step: 'Shipped: final_model hardlinks ckpts/exp-06/final and re-scored 0.6733 on --limit 150 through evaluate.py from a fresh process. Adopted on the higher point estimate on the full benchmark with no evidence of harm, not on a resolved difference - a rerun with a held-out probe and a second seed would be the honest way to settle exp-04 vs exp-06. The open line for more time is a second RFT round sampled from exp-06 over the 6352 questions still unsolved at k=4.'

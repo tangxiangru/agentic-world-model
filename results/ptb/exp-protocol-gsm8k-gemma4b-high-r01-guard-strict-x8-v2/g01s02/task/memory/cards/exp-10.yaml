@@ -1,0 +1,126 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-10
+created_at: '2026-09-03T17:15:00Z'
+situation:
+  elapsed_h: 7.1
+  remaining_h: 2.9
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.6907, protocol_n: 1319}
+  trigger: "Every lever tried since exp-03 has landed inside noise: more data and RFT (exp-05, 0.7005), a weight average (exp-07, 0.6945), a second epoch (exp-04), and the few-shot prefix (exp-09, 1.0 point across 0/2/10 shots). Learning rate is the one first-order training hyperparameter that has never been varied - every run in this batch used 1e-5 - and 2.9 h is exactly enough for one more 1-epoch run plus its full-test eval and repackaging."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02 through exp-09", observation: "all lr 1.0e-5; the four scored checkpoints span 0.691-0.701 at n=1319 against +/-1 point of run noise"}
+    - {path: /home/ben/task/logs/exp-05.log, locator: "grad_norm 9.125 at step 10 falling to 1.5-3.3 by the end, train_loss 0.283", observation: "gradients are well behaved and never near clipping late in the run, which is what makes a 2x lr worth trying rather than reckless"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion", observation: "extra passes over the same data do nothing, so if the model is underfit it is the step size, not the epoch count"}
+  alternatives_rejected:
+    - {option: "Another 100k rows of OpenMathInstruct-2 over fresh problems", reason: "exp-05 already took distinct problems from 27417 to 47417 and moved 0.7 points; at this data scale problem count reads flat, so buying more of it is the lever the evidence says is spent"}
+    - {option: "A second RFT round from exp-05", reason: "sampling plus training is about 2.5 h, which does not leave time to evaluate, repackage and close inside the budget"}
+    - {option: "Do nothing and close out", reason: "the remaining time has no other use, the incumbent is already shipped and verified in final_model/, so a failed run costs only unused hours"}
+    - {option: "lr 3e-5 or higher", reason: "a 3x step on a full fine-tune of a 4B pretrained checkpoint risks a loss spike that wastes the last run; 2e-5 is the standard upper end for this model size"}
+  pitfalls_hit:
+    - {what: "The first launch of this card OOMed at step 0: the exp-09 probe's vllm process (pid 16793) had printed its results and exited its generate() call but never released the GPU, so 65.7 GB of the 80 GB was still held when the trainer allocated. The crash was silent in the sense that the log's last visible line was a progress bar at 0/1250, and it was not noticed for 29 minutes.", cost_h: 0.5, fix: "kill the lingering engine, confirm nvidia-smi reports 0 MiB used before launching, and cut the run to 0.8 epochs to fit the time that was lost."}
+  smoke_runs: []
+problem:
+  statement: "The batch has converged to ~0.69-0.70 across four checkpoints built from different data mixtures, which is the signature of an optimisation plateau rather than a data limit: two runs that differ by 91k rows and 20000 distinct problems produce the same score. If the model is underfit at lr 1e-5 with an effective batch of ~144 sequences, no amount of additional data at that step size will move it."
+  evidence:
+    - {path: /home/ben/task/eval/exp-07_exp-02_final_greedy_test1319.json, locator: "0.6937 on 69282 rows"}
+    - {path: /home/ben/task/eval/exp-07_exp-05_final_greedy_test1319.json, locator: "0.7005 on 160581 rows", observation: "2.3x the data for +0.7 points, which is inside run noise"}
+    - {path: /home/ben/task/analysis/exp-07_diag.json, locator: "missed_by_all_three=284", observation: "284 of 1319 items are missed by every checkpoint produced so far"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Repeating exp-05 - same base snapshot, same 160581 rows, 0.8 epochs instead of 1 after losing 0.5 h to an OOM, same batch and schedule - with the learning rate doubled from 1e-5 to 2e-5 will change full-test accuracy relative to exp-05's 0.7005."
+  mechanism: "At lr 1e-5 over a single epoch with an effective batch of ~144 sequences the model takes 1250 optimiser steps; if that is too few effective steps to fit the target distribution, doubling the step size covers more of the same trajectory and reaches a better-fit point. The falsifier is symmetric: too large a step on a pretrained checkpoint damages the base capabilities the chains rest on."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "-3 to +3 points; this is a genuinely two-sided test, and only a gain larger than the +/-1 point run noise counts"
+  falsified_if: "full-test accuracy is at or below 0.7005, i.e. the higher step size does not help, in which case final_model/ stays as it is"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v3.jsonl
+      source: "identical to exp-05: data/sft_v2.jsonl + data/omi2_extra.jsonl (both nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, gsm8k and augmented_gsm8k subsets) + data/rft_raw.jsonl (synthetic:self from ckpts/exp-02/final)"
+      n_examples: 160581
+      built_by: /home/ben/task/scripts/sample_rft.py
+      build_command: [python3, scripts/sample_rft.py, --model, /home/ben/task/ckpts/exp-02/final, --questions, data/rft_questions.jsonl, --out, data/rft_raw.jsonl, --k, '4', --temperature, '1.0', --top-p, '0.95', --max-tokens, '512', --keep-per-question, '4', --max-num-seqs, '1024']
+      selection: "unchanged from exp-05 - the data is held fixed so that learning rate is the only variable. No GSM8K test item anywhere; all three components passed the contamination checker."
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/fewshot_pool.jsonl
+      source: "openai/gsm8k train split"
+      n_examples: 7473
+      built_by: null
+      build_command: []
+      selection: "unchanged: in-context prefix on 8% of rows, never a loss target"
+      contamination_check: not_run
+      mixture_weight: 0.08
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer (custom token-budget batch sampler)
+    peft: none
+    hyperparams: {lr: 2.0e-5, epochs: 0.8, batch_size: 6144, grad_accum: 8, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02/exp-05"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python3, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/sft_v3.jsonl, --out, /home/ben/task/ckpts/exp-10, --token-budget, '6144', --grad-accum, '8', --epochs, '0.8', --lr, '2e-5', --max-seq-len, '1536', --save-steps, '900', --attn, eager]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-10.log
+  output_dir: /home/ben/task/ckpts/exp-10
+  checkpoints:
+    every_steps: 900
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.65}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items, greedy via generation_config.json"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7005
+    path: /home/ben/task/eval/exp-07_exp-05_final_greedy_test1319.json
+  diagnostic:
+    what: "final training loss against exp-05's 0.2569 - a lower loss with no accuracy gain says the plateau is the data, a higher loss or a spike says the step was too large"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.58
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-10/checkpoint-900, step: 900}
+    - {path: /home/ben/task/ckpts/exp-10/final, step: 1000}
+    - {path: /home/ben/task/ckpts/exp-10/final_greedy, step: 1000}
+    - {path: /home/ben/task/final_model, step: 1000}
+  training_summary:
+    final_loss: 0.2552
+    steps: 1000
+    notes: "0.8 epochs over 160581 rows, 5670 s at 22.66 samples/s, train_loss 0.2777 (exp-05 at lr 1e-5 over a full epoch: 0.2829). No loss spike; grad_norm ended at 1.0-1.2 against exp-05's 1.5-3.3, i.e. the doubled step size settled to a flatter point rather than destabilising."
+  measurements:
+    - {metric: accuracy, value: 0.7309, n: 1319, path: /home/ben/task/eval/exp-10_test1319.json, delta_vs_comparator: 0.0304}
+    - {metric: accuracy, value: 0.7316, n: 1319, path: /home/ben/task/eval/exp-10_final_model_test1319.json, delta_vs_comparator: 0.0311}
+  diagnostic_result:
+    value: 0.2552
+    path: /home/ben/task/logs/exp-10.log
+    notes: "Final logged loss 0.2552 against exp-05's 0.2569 on the same data with 20% fewer rows seen - the higher step size fit the corpus better per row, and that showed up in accuracy rather than only in loss. The plateau read in this card's problem statement was an optimisation plateau, not a data limit."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "lr 2e-5 scores 0.7309 on all 1319 test items against exp-05's 0.7005 at lr 1e-5 on identical data: +3.0 points, three times the +/-1 point run-to-run noise exp-08 measured and the only intervention since exp-03 to clear it. The shipped copy rescored 0.7316."
+  decision: adopt
+  next_step: "final_model/ is ckpts/exp-10/final with a greedy generation_config, verified at 0.7316 by a fresh vllm load. The open question this batch never got to: lr was tested at one point only and 2e-5 won by 3 points, so the optimum may be higher still - a next batch should sweep 2e-5 / 4e-5 / 8e-5 before spending any more time on data, because five hours here went into data mixtures that all landed inside noise."

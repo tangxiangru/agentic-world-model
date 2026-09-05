@@ -1,0 +1,99 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-05T03:35:00Z'
+situation:
+  elapsed_h: 5.5
+  remaining_h: 4.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.527, protocol_n: 150}
+  trigger: "exp-06/07 showed capability (53%) and stopping trade off with training amount: 2 epochs=high cap/broken stop, 1 epoch=low cap/good stop. Root cause is the grader's 10-shot prompt (shots joined by \\n\\n, no stop token) priming continuation."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "cont 55% @ loss 0.29"}
+    - {path: /home/ben/task/memory/cards/exp-07.yaml, locator: "cont 2% but cap 44% @ 1 epoch"}
+  alternatives_rejected:
+    - {option: "accept exp-03 0.527", reason: "want to capture the 53% capability RFT unlocked; fixing stopping should get ~0.55+"}
+    - {option: "tune epochs further", reason: "exp-06/07 proved no epoch sweet-spot exists for zero-shot-trained RFT"}
+  pitfalls_hit:
+    - {what: "chased an epoch sweet-spot across exp-06/07", cost_h: 1.4, fix: "attack root cause: train with few-shot prefixes matching eval so stopping is decoupled from training amount"}
+  smoke_runs: []
+problem:
+  statement: "At eval the model must stop after the FINAL answer despite 10 preceding Q/A blocks that were joined without stop tokens. Zero-shot SFT does not teach this robustly once the model is well-trained, so raising capability breaks stopping."
+  evidence:
+    - {path: /home/ben/task/eval/exp-06_greedy_dev150.json, locator: "0.307 @ 55% cont", observation: "high-capability model fails to stop under 10-shot"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Prepending k random GSM8K-train few-shot examples (in the grader's exact format) as a system message to 50% of RFT training targets teaches the model to answer the final question and stop regardless of preceding blocks; trained 2 epochs, greedy dev-150 beats exp-03's 0.527 with continuation near 0."
+  mechanism: "Training-time exposure to multi-block contexts where the target ends in <end_of_turn> makes the stop-token prior dominate the in-context continuation prior at the answer boundary, decoupling stopping from training amount so 2-epoch capability (~53%) is retained."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+0.02 to +0.08 (expect 0.55-0.60), continuation < 10%"
+  falsified_if: "continuation rate > 20% or greedy dev-150 accuracy <= 0.527"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/fs_sft.jsonl
+      source: "derived:openai/gsm8k train (human + few-shot prefixes) + synthetic:self (exp-02 RFT); few-shot prefixes are GSM8K TRAIN, never test"
+      n_examples: 15973
+      built_by: /home/ben/task/scripts/build_fewshot.py
+      build_command: [python, scripts/build_fewshot.py]
+      selection: "7473 human + 8500 rft targets (subsampled); 50% get k in [2,8] GSM8K-train few-shot prefix in grader format; token-budgeted so completion never truncates"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, full FT of text LM (vision frozen)"
+    peft: "none"
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 8, grad_accum: 4, max_seq_len: 1600, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, optim: paged_adamw_8bit}
+    target_format: "optional few-shot system + prompt (MATH_PROMPT_TEMPLATE) via gemma3.jinja; assistant = CoT + newline ANSWER: N + <end_of_turn>; completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/fs_sft.jsonl, --out, /home/ben/task/ckpts/exp-08, --lr, "1e-5", --epochs, "2", --batch, "8", --grad-accum, "4", --max-seq-len, "1600"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 2.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-08-greedy, --limit, "150", --json-output-file, /home/ben/task/eval/exp-08_greedy_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.527
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic: {what: "continuation rate (should be < 10%)", n: 150, metric: accuracy, direction: higher}
+result:
+  execution: completed
+  wall_h: 2.15
+  output_checkpoint: /home/ben/task/ckpts/exp-08
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08, step: 998}
+  training_summary: {final_loss: 0.34, steps: 998, notes: "train_loss 0.340; 0 truncated; batch8 x grad_accum4"}
+  measurements:
+    - {metric: accuracy, value: 0.567, n: 150, path: /home/ben/task/eval/exp-08_greedy_dev150.json, delta_vs_comparator: 0.04}
+  diagnostic_result: {value: 0.0, path: /home/ben/task/eval/exp-08_greedy_dev150.json, notes: "continuation_rate=0% (stopping FIXED even at 2 epochs / loss 0.34) AND first_answer_correct=57% (best capability). Few-shot-augmented training decoupled stopping from training amount as hypothesized."}
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Few-shot-augmented RFT training reached 0.567 (+0.04 over exp-03) with 0% continuation and 57% first-answer accuracy. Prepending eval-format few-shot prefixes to half the targets fixed stopping robustly, letting 2-epoch RFT capability show through. New best; promote to final_model."
+  decision: adopt
+  next_step: "Promote exp-08 weights + greedy generation_config to final_model; verify vLLM loadability with a real eval on the final_model path."

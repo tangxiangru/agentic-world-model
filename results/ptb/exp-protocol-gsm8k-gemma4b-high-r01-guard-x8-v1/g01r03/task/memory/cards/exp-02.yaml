@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T18:59:49Z'
+situation:
+  elapsed_h: 0.75
+  remaining_h: 9.25
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.06, protocol_n: 300}
+  trigger: "exp-01: the base checkpoint scores 0.06 on dev-300 and 203 of 300 completions contain more than one answer line - it never terminates the turn, it keeps writing new problems (analysis/exp-01_base_failuremodes.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_base_failuremodes.json, locator: "completions_with_multiple_answer_lines=203, output_tokens_p50=3941"}
+    - {path: /home/ben/task/eval/exp-01_base_dev300.json, locator: "accuracy 0.06"}
+  alternatives_rejected:
+    - {option: "Prompt-only fix (stop strings, shorter max_tokens)", reason: "evaluate.py and templates/ are immutable and the grader sends no stop strings; the terminator has to come from the weights"}
+    - {option: "LoRA instead of a full fine-tune", reason: "the checkpoint needs a behaviour change (turn termination and answer format) on top of a style change; full FT is the stronger lever and the smoke runs show it fits in 80GB at 30.7 samples/s"}
+    - {option: "Train on the raw GSM8K train split only (7.5k rows)", reason: "too small to move a 4B model far; OpenMathInstruct-2 supplies ~154k GSM8K-train-derived chains at higher solution quality"}
+    - {option: "Put the eval's 10-shot system prefix on every training row", reason: "~1700 masked prompt tokens per row would multiply training compute by roughly six for a prefix the model only has to tolerate, not learn; instead 8 percent of rows carry a 1-3 shot prefix as a hedge"}
+  pitfalls_hit:
+    - {what: "turning gradient checkpointing off at micro-batch 16 OOMs at 79.1 of 79.2 GiB", cost_h: 0.05, fix: "keep gradient checkpointing and raise the micro-batch instead"}
+    - {what: "micro-batch 8 runs at 3.7k tok/s, about 3.6 h/epoch, far below what the H100 should do", cost_h: 0.1, fix: "micro-batch 64 with checkpointing: 30.7 samples/s, about 65 min/epoch"}
+    - {what: "one built row carried a second 'ANSWER:' line inside the solution body (pitfall double_answer_format)", cost_h: 0.05, fix: "build_data.py now drops rows whose solution already contains the answer marker; data rebuilt"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --limit, '512', --batch-size, '8', --grad-accum, '8', --param-dtype, fp32], outcome: "8 steps, train_loss 0.499, 9.3 samples/s; script, collator and save path work end to end"}
+    - {command: [python, scripts/train_sft.py, --limit, '4096', --batch-size, '64', --grad-accum, '1', --param-dtype, fp32, --optim, adamw_bnb_8bit], outcome: "train_loss 0.365, 30.7 samples/s, fits in 80GB; this is the chosen configuration"}
+    - {command: [python, scripts/train_sft.py, --limit, '4096', --batch-size, '64', --grad-accum, '1', --param-dtype, bf16, --optim, adamw_torch_fused], outcome: "32.9 samples/s - only 7 percent faster than fp32 master weights, so the pure-bf16 update-rounding risk is not worth taking"}
+problem:
+  statement: "The base checkpoint does not end its turn. Under the harness prompt it writes a plausible chain of thought for the asked question and then keeps going - new question, new reasoning, new answer - until the 4000-token cap. Because inspect's match(numeric=True) reads the LAST numeric token of the completion, the graded number is usually the answer to a problem the model invented, so dev-300 scores 0.06 even though many first answers look right."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_base_failuremodes.json, locator: "completions_with_multiple_answer_lines=203; completions_with_one_answer_line=62; output_tokens_p50=3941 against a 4000 cap", observation: "two thirds of completions run on past the first answer and the median completion nearly exhausts max_tokens"}
+    - {path: /home/ben/task/logs/2026-09-03T18-38-43+00-00_gsm8k_9RNbQSCRKwfMvXTEW3Hotb.json, locator: "samples[0].scores.match.explanation", observation: "the completion answers the asked question and then writes further invented problems; the grader reads the last of those"}
+  affected_share: 0.677
+  failure_examples:
+    - {id: "dev300-item-0", source: /home/ben/task/logs/2026-09-03T18-38-43+00-00_gsm8k_9RNbQSCRKwfMvXTEW3Hotb.json, question: "Cody eats three times as many cookies as Amir eats. If Amir eats 5 cookies, how many cookies do both of them eat together?", gold: "20", model_output: "several invented question/reasoning/answer blocks, ending 'Answer: 15'", failure: "no <end_of_turn>; the graded number comes from a hallucinated continuation"}
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT on 120k GSM8K-train-derived chains, every target ending in <end_of_turn> and containing exactly one 'ANSWER: N' line and rendered through the harness's own gemma3.jinja, raises dev-300 accuracy far above the base checkpoint's 0.06 and collapses the multi-answer-line share."
+  mechanism: "Termination is a behaviour the weights never learned - the model has seen no model turn that ends. Supervising only the completion tokens of correctly formatted single-answer chains teaches the terminator and the answer surface form at once, and OpenMathInstruct-2's Llama-3.1-405B chains are stronger step-by-step solutions than the terse GSM8K rationales, so reasoning quality should rise alongside."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+0.45 to +0.65 (0.06 -> 0.55-0.75)"
+  falsified_if: "dev-300 accuracy below 0.40, or more than 20 of 300 completions still contain more than one answer line."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e split train_1M, rows with problem_source in {gsm8k, augmented_gsm8k} (GSM8K *train* problems and problems generated from them); the 1-3 shot prefixes on 8 percent of rows are drawn from openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866 split train"
+      n_examples: 120000
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_v1.jsonl, --max-rows, '120000']
+      selection: "integer expected_answer only; solution must contain a boxed answer and be at most 3000 chars; the boxed wrapper is unwrapped; rows whose solution already contains '####' or 'ANSWER: ' are dropped; exact (problem, solution) dedup; at most 2 solutions per distinct problem, giving 70308 distinct problems; shuffled with seed 0"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with liger-kernel 0.8.2 fused linear cross-entropy
+    peft: none
+    hyperparams: {lr: 2.0e-5, epochs: 1.0, batch_size: 64, grad_accum: 2, max_seq_len: 1280, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32 master weights with bf16 autocast and adamw_bnb_8bit, seed: 0}
+    target_format: "the OpenMathInstruct-2 chain of thought with the boxed wrapper removed, then a blank line, then 'ANSWER: N' where N carries thousands commas when |N| >= 1000, then <end_of_turn>. Loss on completion tokens only (prompt tokens are -100). Vision tower and multimodal projector frozen."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/sft_v1.jsonl, --out, /home/ben/task/ckpts/exp-02, --max-seq-len, '1280', --lr, '2e-5', --epochs, '1', --batch-size, '64', --grad-accum, '2', --param-dtype, fp32, --optim, adamw_bnb_8bit, --save-steps, '312']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-02_train.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 312
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '300', --max-connections, '32', --gpu-memory-utilization, '0.8', --json-output-file, '{out}']
+    dev_set: official gsm8k test --limit 300 (first 300 items in inspect's default order)
+    n: 300
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.06
+    path: /home/ben/task/eval/exp-01_base_dev300.json
+  diagnostic:
+    what: "number of dev-300 completions containing more than one answer line; 203 for the base checkpoint"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.0
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-312, step: 312}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-624, step: 624}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-936, step: 936}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 938}
+  training_summary: {final_loss: 0.288, steps: 938, notes: "3563.7 s wall, 33.7 samples/s, 119945 rows kept and 55 dropped for length, 43.9M tokens, grad_norm stayed near 0.9 throughout. AFTER the run finished, scripts/train_sft.py was edited to copy preprocessor_config.json and processor_config.json into the saved directory; the edit only adds file copying at save time and did not touch the training that produced this checkpoint. The card was re-locked for that reason."}
+  measurements:
+    - {metric: accuracy, value: 0.6833, n: 300, path: /home/ben/task/eval/exp-02_final_dev300.json, delta_vs_comparator: 0.6233}
+  diagnostic_result:
+    value: 3
+    path: /home/ben/task/analysis/exp-02_dev300_diag.json
+    notes: "multi-answer-line completions 203 -> 3 of 300; completions hitting the 4000-token cap 4 of 300; median completion 3941 -> 199 output tokens. The termination failure is gone."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-300 0.060 -> 0.683 (+0.623, stderr 0.027). The mechanism is confirmed directly: completions with more than one answer line fell from 203 to 3 and the median completion shrank from 3941 to 199 output tokens, so the model now ends its turn and the grader reads the answer it meant."
+  decision: adopt
+  next_step: "exp-03: the checkpoint still decodes with the base generation_config (do_sample true, top_p 0.95, top_k 64, temperature 1.0), which vLLM reads as its default sampling params. Test greedy decoding (temperature 0.0 in generation_config.json) under the same protocol."

@@ -1,0 +1,99 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T23:06:08Z'
+situation:
+  elapsed_h: 0.75
+  remaining_h: 9.25
+  incumbent:
+    ref: exp-01
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0467, protocol_n: 150}
+  trigger: "exp-01 baseline is 0.047: the base model rambles to max_tokens (~2170 output tok/sample) instead of stopping, so the grader's last-number extraction misses the true answer."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "result.diagnostic_result: 325560 out tok / 150 samples"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full FT", reason: "full FT of the 3.4B text LM (vision frozen) fits comfortably on 80GB with 8-bit Adam and usually gives best quality; can fall back to LoRA if OOM"}
+    - {option: "Include 10-shot prefix in training prompts", reason: "quadruples sequence length for little gain; zero-shot SFT teaches format+math and the eval's 10 shots only reinforce it"}
+    - {option: "MetaMathQA augmentation now", reason: "start with the guaranteed-clean GSM8K train split; add augmentation in a later card if needed"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The base model knows arithmetic but does not follow the GSM8K answer format or stop: it never reliably emits 'ANSWER: N' followed by <end_of_turn>, so accuracy is floored at 0.047."
+  evidence:
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: "accuracy=0.0467", observation: "base model dev-150 accuracy"}
+    - {path: /home/ben/task/memory/attempts/exp-01/91a22809546a45ba969d7d7ee9194030/stdout.txt, locator: "O: 325,560 tokens", observation: "~2170 output tokens/sample: rambling, no stop"}
+  affected_share: 0.95
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Full-parameter SFT of the text LM on 7473 GSM8K-train-derived examples (clean CoT + 'ANSWER: N' + <end_of_turn>), rendered with the grader's exact gemma3.jinja template and completion-only loss, will raise dev-150 accuracy far above the 0.047 base."
+  mechanism: "SFT teaches the model to produce a short correct chain-of-thought, put the final number on an 'ANSWER: N' line, and emit <end_of_turn> so vLLM stops with the answer as the last number the grader reads."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: "+0.30 or more (expect 0.45-0.65)"
+  falsified_if: "dev-150 accuracy < 0.20, or output tokens/sample does not drop sharply (model still fails to stop)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train_sft.jsonl
+      source: "derived:openai/gsm8k (main, train split; NOT test)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py]
+      selection: "all train rows; strip <<calc>> tags; reformat '#### N' -> 'ANSWER: N<end_of_turn>'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full FT of text LM (vision_tower + projector frozen)"
+    peft: "none"
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 16, grad_accum: 2, max_seq_len: 768, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, optim: paged_adamw_8bit}
+    target_format: "prompt (MATH_PROMPT_TEMPLATE) rendered via gemma3.jinja; assistant = clean CoT + newline ANSWER: N + <end_of_turn>; completion-only loss"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/gsm8k_train_sft.jsonl, --out, /home/ben/task/ckpts/exp-02, --lr, "1e-5", --epochs, "3", --batch, "16", --grad-accum, "2", --max-seq-len, "768"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02, --limit, "150", --json-output-file, /home/ben/task/eval/exp-02_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.0467
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic: {what: "output tokens per sample should drop (model now stops)", n: 150, metric: accuracy, direction: higher}
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/ckpts/exp-02
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02, step: 700}
+  training_summary: {final_loss: 0.38, steps: 700, notes: "train_loss avg 0.455; 3.88B trainable (vision frozen); 0 rows truncated"}
+  measurements:
+    - {metric: accuracy, value: 0.40, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.353}
+  diagnostic_result: {value: 114.6, path: /home/ben/task/eval/exp-02_dev150.json, notes: "output tokens/sample 2170 -> ~115: model now stops at <end_of_turn>; eval wall 17min -> 1min"}
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "SFT lifted dev-150 from 0.047 to 0.40 (+0.35). The format/stopping problem is solved (output tokens/sample 2170->115). Remaining errors are math correctness, not format."
+  decision: adopt
+  next_step: "exp-03: greedy decoding (do_sample=false) via decode-config — sampling at temp~1 adds noise; greedy typically +several pts. Then consider MetaMathQA augmentation for math capability."

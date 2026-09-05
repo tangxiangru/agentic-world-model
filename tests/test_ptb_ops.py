@@ -48,8 +48,9 @@ def repo(tmp_path: Path, monkeypatch):
     states: dict[str, str] = {}
     monkeypatch.setattr(ops, "job_state", lambda job_id: states.get(job_id, "UNKNOWN"))
     monkeypatch.setattr(ops, "result_for_job", lambda job_id: None)
-    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir, **_kwargs: [])
     monkeypatch.setattr(ops, "_worktree_dirty", lambda repo_root: "")
+    monkeypatch.setattr(ops, "_submission_ownership_issue", lambda: None)
     return root, states
 
 
@@ -85,12 +86,39 @@ def test_queue_is_validated(repo) -> None:
         ({**ENTRY, "manifest": "/etc/passwd"}, "committed experiments"),
         ({**ENTRY, "why": ""}, "why must say"),
         ({**ENTRY, "pilot": "later"}, "pilot must be"),
+        ({**ENTRY, "want": "held", "pilot": "first"}, "held buffer cannot use a pilot"),
     ):
         with pytest.raises(ops.OpsError, match=message):
             ops.load_queue(_queue(root, bad), root)
     with pytest.raises(ops.OpsError, match="listed twice"):
         ops.load_queue(_queue(root, ENTRY, ENTRY), root)
     assert ops.load_queue(_queue(root), root) == []
+
+
+def test_queue_validates_a_per_entry_shared_reservation_release_override(repo) -> None:
+    root, _ = repo
+    override = {
+        "allow_shared_reservation": True,
+        "authorized_by": "user",
+        "authorized_at": "2026-09-03 09:39 UTC",
+        "reason": "fill the restored owned node",
+    }
+    entry = {**ENTRY, "release_override": override}
+    assert ops.load_queue(_queue(root, entry), root) == [entry]
+
+    bad_cases = (
+        ({**ENTRY, "want": "held", "release_override": override}, "requires want: submitted"),
+        ({**ENTRY, "release_override": "yes"}, "must be a mapping"),
+        (
+            {**ENTRY, "release_override": {**override, "allow_shared_reservation": False}},
+            "must set allow_shared_reservation: true",
+        ),
+        ({**ENTRY, "release_override": {**override, "reason": ""}}, "reason must be non-empty"),
+        ({**ENTRY, "release_override": {**override, "surprise": True}}, "unknown field"),
+    )
+    for bad, message in bad_cases:
+        with pytest.raises(ops.OpsError, match=message):
+            ops.load_queue(_queue(root, bad), root)
 
 
 def test_receipt_kind_survives_the_timestamp_in_the_name() -> None:
@@ -107,6 +135,41 @@ def test_an_entry_without_a_receipt_is_submitted(repo) -> None:
     (actions,) = ops.plan([ENTRY], root)
     assert (actions.kind, actions.batch, actions.pilot, actions.manifest) == (
         "submit", "ep-r01", False, ENTRY["manifest"])
+
+
+def test_a_held_entry_submits_once_then_waits_for_an_explicit_release(
+    repo, tmp_path: Path
+) -> None:
+    root, states = repo
+    held_entry = {**ENTRY, "want": "held", "why": "eight-cell safety buffer"}
+    (submit,) = ops.plan([held_entry], root)
+    assert submit.kind == "submit" and submit.keep_held is True
+
+    _receipt(tmp_path / "vol", "ep-r01", "formal", [("p01r1", "111")], state="held")
+    states["111"] = "PENDING"
+    actions = ops.plan([held_entry], root)
+    assert [action.kind for action in actions] == ["copy_receipt"]
+    ops.apply(actions, root)
+    assert ops.plan([held_entry], root) == []
+
+    (release,) = ops.plan([ENTRY], root)
+    assert release.kind == "release" and release.receipt.startswith("formal-")
+
+    override_entry = {
+        **ENTRY,
+        "release_override": {
+            "allow_shared_reservation": True,
+            "authorized_by": "user",
+            "authorized_at": "2026-09-03 09:39 UTC",
+            "reason": "fill owned node",
+        },
+    }
+    (release,) = ops.plan([override_entry], root)
+    assert release.allow_shared_reservation is True
+    assert release.release_authorization == (
+        "authorized_by=user; authorized_at=2026-09-03 09:39 UTC; "
+        "reason=fill owned node"
+    )
 
 
 def test_pilot_first_gates_the_formal_submission(repo, tmp_path: Path) -> None:
@@ -131,6 +194,7 @@ def test_pilot_first_gates_the_formal_submission(repo, tmp_path: Path) -> None:
     assert blocked.kind == "blocked" and "did not validate" in blocked.detail
 
     status["complete"] = True
+    status["eligible"] = True
     (root / "results/ptb/ep-r01/p01r1/status.json").write_text(json.dumps(status))
     (formal,) = ops.plan([entry], root)
     assert (formal.kind, formal.pilot) == ("submit", False)
@@ -154,6 +218,7 @@ def test_finished_jobs_are_harvested_once(repo, tmp_path: Path) -> None:
 
 def test_a_cancelled_entry_cancels_pending_jobs_only(repo, tmp_path: Path, monkeypatch) -> None:
     root, states = repo
+    monkeypatch.setattr(ops.ptb, "read_ptb_env", dict)
     _receipt(tmp_path / "vol", "ep-r01", "formal", [("p01r1", "301"), ("p01r2", "302"), ("p01r3", "303")])
     states.update({"301": "PENDING", "302": "RUNNING", "303": "COMPLETED"})
     entry = {**ENTRY, "want": "cancelled", "why": "replaced by ep-r02"}
@@ -161,18 +226,55 @@ def test_a_cancelled_entry_cancels_pending_jobs_only(repo, tmp_path: Path, monke
     assert [(a.kind, a.cell) for a in actions] == [
         ("copy_receipt", None), ("harvest", "p01r3"), ("cancel", "p01r1"), ("wait", "p01r2")]
     calls: list[list[str]] = []
-    monkeypatch.setattr(ops.subprocess, "run", lambda cmd, **kw: (calls.append(list(cmd)) or
-                        __import__("subprocess").CompletedProcess(cmd, 0, "", "")))
+    def fake_cancel(cmd, **kw):
+        calls.append(list(cmd))
+        assert cmd == ["scancel", "--ctld", "--state=PENDING", "301"]
+        states["301"] = "CANCELLED"
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_cancel)
     lines = ops.apply(actions, root)
-    assert calls == [["scancel", "301"]]
+    assert calls == [["scancel", "--ctld", "--state=PENDING", "301"]]
     receipt = json.loads((root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").read_text())
     assert receipt["cancellations"][0]["job_id"] == "301"
     assert receipt["cancellations"][0]["reason"] == "replaced by ep-r02"
+    assert receipt["cancellations"][0]["state_after"] == "CANCELLED"
+    assert receipt["cancellations"][0]["pending_only"] is True
     assert any(line.startswith("cancel ep-r01/p01r1 job=301 (PENDING)") for line in lines)
     # the next plan does not cancel it again, and still leaves the running one alone
     states["301"] = "CANCELLED"
     kinds = [(a.kind, a.cell) for a in ops.plan([entry], root)]
     assert kinds == [("harvest", "p01r1"), ("wait", "p01r2")]
+
+
+def test_cancelled_by_user_is_harvested_after_recorded_withdrawal(
+    repo, tmp_path: Path, monkeypatch
+) -> None:
+    root, _states = repo
+    receipt_path = _receipt(
+        tmp_path / "vol", "ep-r01", "formal", [("p01r1", "91054")], state="held"
+    )
+    receipt = json.loads(receipt_path.read_text())
+    receipt["cancellations"] = [{"job_id": "91054", "state_before": "PENDING"}]
+    receipt_path.write_text(json.dumps(receipt))
+
+    def fake_run(command, **kwargs):
+        assert command[:4] == ["sacct", "-nX", "-j", "91054"]
+        return __import__("subprocess").CompletedProcess(command, 0, "CANCELLED by 0\n", "")
+
+    monkeypatch.setattr(ops, "job_state", ptb._job_state)
+    monkeypatch.setattr(ptb.subprocess, "run", fake_run)
+    entry = {**ENTRY, "want": "cancelled", "why": "whole unstarted block withdrawn"}
+    actions = ops.plan([entry], root)
+    assert [(a.kind, a.cell, a.state) for a in actions] == [
+        ("copy_receipt", None, None), ("harvest", "p01r1", "CANCELLED")
+    ]
+    ops.apply(actions, root)
+    status = json.loads((root / "results/ptb/ep-r01/p01r1/status.json").read_text())
+    assert status["slurm_state"] == "CANCELLED"
+    assert status["complete"] is False
+    assert status["issues"] == ["result directory not found"]
+    assert ops.plan([entry], root) == []
 
 
 def test_a_receipt_that_did_not_reach_submitted_blocks(repo, tmp_path: Path) -> None:
@@ -186,17 +288,18 @@ def test_a_receipt_that_did_not_reach_submitted_blocks(repo, tmp_path: Path) -> 
 # ---- apply: submit -----------------------------------------------------------
 
 def test_apply_submits_through_the_launcher_and_tracks_the_receipt(repo, tmp_path: Path, monkeypatch) -> None:
-    root, states = repo
+    root, _states = repo
     submitted: list[tuple[str, bool]] = []
 
-    def fake_submit(manifest, *, pilot=False, cell_ids=None):
-        submitted.append((manifest["batch_id"], pilot))
+    def fake_submit(manifest, *, pilot=False, cell_ids=None, keep_held=False):
+        submitted.append((manifest["batch_id"], pilot, keep_held))
         return _receipt(tmp_path / "vol", manifest["batch_id"], "pilot" if pilot else "formal",
-                        [("p01r1", "401")] if pilot else [("p01r1", "402"), ("p01r2", "403")])
+                        [("p01r1", "401")] if pilot else [("p01r1", "402"), ("p01r2", "403")],
+                        state="held" if keep_held else "submitted")
 
     monkeypatch.setattr(ops, "submit_batch", fake_submit)
     lines = ops.apply(ops.plan([ENTRY], root), root)
-    assert submitted == [("ep-r01", False)]
+    assert submitted == [("ep-r01", False, False)]
     assert (root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").is_file()
     assert lines[0].startswith("submit ep-r01: 2 job(s) 402,403")
     log = (root / "results/ptb/ops-log.md").read_text()
@@ -205,17 +308,97 @@ def test_apply_submits_through_the_launcher_and_tracks_the_receipt(repo, tmp_pat
 
 
 def test_a_dirty_worktree_blocks_submits_but_not_harvests(repo, tmp_path: Path, monkeypatch) -> None:
-    root, states = repo
+    root, _states = repo
     monkeypatch.setattr(ops, "_worktree_dirty", lambda repo_root: "?? results/ptb/x")
     monkeypatch.setattr(ops, "submit_batch", lambda *a, **k: pytest.fail("must not submit"))
     lines = ops.apply(ops.plan([ENTRY], root), root)
     assert lines[0].startswith("blocked submit: the worktree is not clean")
 
 
+def test_ownership_failure_blocks_submits(repo, monkeypatch) -> None:
+    root, _states = repo
+    monkeypatch.setattr(
+        ops, "_submission_ownership_issue", lambda: "OWNERSHIP FAIL: 1 placement violation(s)"
+    )
+    monkeypatch.setattr(ops, "submit_batch", lambda *a, **k: pytest.fail("must not submit"))
+
+    lines = ops.apply(ops.plan([ENTRY], root), root)
+
+    assert lines == ["blocked submit: OWNERSHIP FAIL: 1 placement violation(s)"]
+
+
+def test_ownership_failure_allows_only_a_registered_held_buffer(
+    repo, tmp_path: Path, monkeypatch
+) -> None:
+    root, _states = repo
+    held_entry = {**ENTRY, "want": "held", "why": "eight-cell safety buffer"}
+    submitted: list[bool] = []
+
+    def fake_submit(manifest, *, pilot=False, cell_ids=None, keep_held=False):
+        submitted.append(keep_held)
+        return _receipt(
+            tmp_path / "vol",
+            manifest["batch_id"],
+            "formal",
+            [("p01r1", "410"), ("p01r2", "411")],
+            state="held",
+        )
+
+    monkeypatch.setattr(
+        ops, "_submission_ownership_issue", lambda: "OWNERSHIP FAIL: placement violation(s)"
+    )
+    monkeypatch.setattr(ops, "submit_batch", fake_submit)
+
+    lines = ops.apply(ops.plan([held_entry], root), root)
+
+    assert submitted == [True]
+    assert lines[0].startswith("submit ep-r01 (held): 2 job(s)")
+    receipt = json.loads((root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").read_text())
+    assert receipt["state"] == "held"
+
+
+def test_multiple_held_submits_finish_before_any_receipt_dirties_the_tree(
+    repo, tmp_path: Path, monkeypatch
+) -> None:
+    root, _states = repo
+    second_manifest = root / "experiments" / "posttrainbench" / "ep-r02.yaml"
+    second_manifest.write_text(yaml.safe_dump(_small_manifest("ep-r02"), sort_keys=False))
+    entries = [
+        {**ENTRY, "want": "held", "why": "first buffer"},
+        {
+            **ENTRY,
+            "manifest": "experiments/posttrainbench/ep-r02.yaml",
+            "want": "held",
+            "why": "second buffer",
+        },
+    ]
+    tracked_seen: list[list[Path]] = []
+
+    def fake_submit(manifest, *, pilot=False, cell_ids=None, keep_held=False):
+        tracked_seen.append(list((root / "results" / "ptb").glob("*/*.json")))
+        job = "420" if manifest["batch_id"] == "ep-r01" else "421"
+        return _receipt(
+            tmp_path / "vol",
+            manifest["batch_id"],
+            "formal",
+            [("p01r1", job)],
+            state="held",
+        )
+
+    monkeypatch.setattr(ops, "submit_batch", fake_submit)
+
+    lines = ops.apply(ops.plan(entries, root), root)
+
+    assert tracked_seen == [[], []]
+    assert sum(" (held): 1 job(s)" in line for line in lines) == 2
+    assert (root / "results/ptb/ep-r01/formal-2026-09-02T000000.json").is_file()
+    assert (root / "results/ptb/ep-r02/formal-2026-09-02T000000.json").is_file()
+
+
 def test_a_launcher_refusal_is_written_down(repo, monkeypatch) -> None:
     root, _ = repo
 
-    def refuse(manifest, *, pilot=False, cell_ids=None):
+    def refuse(manifest, *, pilot=False, cell_ids=None, keep_held=False):
         raise ptb.ExperimentError("submission gates failed:\n- missing container: x.sif")
 
     monkeypatch.setattr(ops, "submit_batch", refuse)
@@ -254,8 +437,35 @@ def _fake_result(tmp_path: Path) -> Path:
     return result
 
 
+def test_harvest_quarantines_a_runtime_node_outside_the_frozen_site(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(ops, "audit_result", lambda _result_dir, **_kwargs: [])
+    result = _fake_result(tmp_path)
+    (result / "runtime_provenance.json").write_text(
+        '{"experiment": {"cell_id": "p01r1"}, "slurm": {"node": "spill-node"}}'
+    )
+
+    status = ops.harvest_job(
+        result,
+        tmp_path / "bundle",
+        batch="batch",
+        cell="p01r1",
+        job_id="555",
+        expected_nodes={"owned-node-0", "owned-node-1"},
+    )
+
+    assert status["complete"] is True
+    assert status["eligible"] is False
+    assert status["quarantined"] is True
+    assert status["issues"] == []
+    assert status["quarantine_reasons"] == [
+        "runtime Slurm node spill-node is outside frozen site nodes owned-node-0,owned-node-1"
+    ]
+
+
 def test_harvest_keeps_the_readable_part_and_lists_the_rest(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir, **_kwargs: [])
     result = _fake_result(tmp_path)
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -264,6 +474,7 @@ def test_harvest_keeps_the_readable_part_and_lists_the_rest(tmp_path: Path, monk
     status = ops.harvest_job(result, out, batch="ep-r01", cell="p01r1", job_id="555",
                              job_name="job.name", state="COMPLETED", slurm_log_dir=logs)
     assert status["accuracy"] == 0.8125 and status["complete"] is True
+    assert status["eligible"] is True and status["quarantined"] is False
     assert status["judge_flags"] == ["general_anomaly"] and status["awm_sha"] == "abc123"
     assert (out / "metrics.json").is_file() and (out / "judgement_general.json").is_file()
     assert (out / "final_eval_1.txt").is_file()
@@ -294,7 +505,7 @@ def test_harvest_without_a_result_dir_records_that(tmp_path: Path) -> None:
 
 
 def test_harvesting_a_later_attempt_keeps_the_earlier_bundle(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir, **_kwargs: [])
     result = _fake_result(tmp_path)
     out = tmp_path / "results" / "ptb" / "ep-r01" / "p01r1"
     ops.harvest_job(result, out, batch="ep-r01", cell="p01r1", job_id="555", state="FAILED")
@@ -303,8 +514,27 @@ def test_harvesting_a_later_attempt_keeps_the_earlier_bundle(tmp_path: Path, mon
     assert (out.parent / "p01r1.j555" / "status.json").is_file()
 
 
+def test_plan_recognizes_an_archived_earlier_attempt(
+    repo, tmp_path: Path
+) -> None:
+    root, states = repo
+    _receipt(tmp_path / "vol", "ep-r01", "pilot", [("p01r1", "555")])
+    _receipt(tmp_path / "vol", "ep-r01", "formal", [("p01r1", "556")])
+    states.update({"555": "COMPLETED", "556": "COMPLETED"})
+    archived = root / "results/ptb/ep-r01/p01r1.j555"
+    current = root / "results/ptb/ep-r01/p01r1"
+    archived.mkdir(parents=True)
+    current.mkdir(parents=True)
+    (archived / "status.json").write_text(json.dumps({"job_id": "555", "complete": True}))
+    (current / "status.json").write_text(json.dumps({"job_id": "556", "complete": True}))
+
+    actions = ops.plan([ENTRY], root)
+
+    assert [action.kind for action in actions] == ["copy_receipt", "copy_receipt"]
+
+
 def test_collect_reads_a_bundle(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(ops, "audit_result", lambda result_dir: [])
+    monkeypatch.setattr(ops, "audit_result", lambda result_dir, **_kwargs: [])
     result = _fake_result(tmp_path)
     shutil.copy(paths.REPO_ROOT / "skills" / "exp_protocol" / "example-card.yaml",
                 result / "task" / "memory" / "cards" / "exp-01.yaml")
@@ -329,9 +559,29 @@ def test_cancel_refuses_anything_but_pending(tmp_path: Path, monkeypatch) -> Non
 
 def test_cancel_uses_sudo_for_root_owned_allocations(monkeypatch) -> None:
     monkeypatch.setattr(ops.ptb, "read_ptb_env", lambda: {"POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT": "1"})
-    assert ops._scancel_command("5") == ["sudo", "scancel", "5"]
-    monkeypatch.setattr(ops.ptb, "read_ptb_env", lambda: {})
-    assert ops._scancel_command("5") == ["scancel", "5"]
+    assert ops._scancel_command("5") == ["sudo", "scancel", "--ctld", "--state=PENDING", "5"]
+    monkeypatch.setattr(ops.ptb, "read_ptb_env", dict)
+    assert ops._scancel_command("5") == ["scancel", "--ctld", "--state=PENDING", "5"]
+
+
+@pytest.mark.parametrize("state_after", ["RUNNING", "PENDING", "UNKNOWN", "FAILED"])
+def test_cancel_does_not_record_unconfirmed_or_racing_success(tmp_path: Path, monkeypatch, state_after) -> None:
+    receipt = _receipt(tmp_path, "ep-r01", "formal", [("p01r1", "701")])
+    before = receipt.read_bytes()
+    observed = iter(["PENDING", state_after])
+    monkeypatch.setattr(ops, "job_state", lambda job_id: next(observed))
+    monkeypatch.setattr(ops.ptb, "read_ptb_env", dict)
+    calls = []
+
+    def fake_cancel(cmd, **kw):
+        calls.append(cmd)
+        return __import__("subprocess").CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_cancel)
+    with pytest.raises(ops.OpsError, match="cancellation is not confirmed"):
+        ops.cancel_job(receipt, "p01r1", "withdraw unstarted block")
+    assert calls == [["scancel", "--ctld", "--state=PENDING", "701"]]
+    assert receipt.read_bytes() == before
 
 
 # ---- CLI --------------------------------------------------------------------------

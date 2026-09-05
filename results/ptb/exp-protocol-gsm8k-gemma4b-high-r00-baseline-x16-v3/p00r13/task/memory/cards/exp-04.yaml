@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T02:35:24Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 4.6
+  remaining_h: 5.4
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.712, protocol_n: 500}
+  trigger: "After exp-02 fixed termination and exp-03 fixed decoding, all 144 remaining dev-500 failures are wrong maths (analysis/exp-03_greedy_dev500_failure_tags.json: non-termination share 0.000). Nothing about the format is broken any more, so the next gain has to come from the solutions themselves."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev500_failure_tags.json, locator: "failed=144, failed_with_text_after_first_ANSWER_line=0"}
+    - {path: /home/ben/task/logs/exp-04_sample.log, locator: "final line", observation: "the incumbent solves 22491 of 25000 held-out GSM-style problems at least once in 4 samples but only 70.3% of individual samples are correct - the knowledge is there, the single-shot reliability is not"}
+  alternatives_rejected:
+    - {option: "More OpenMathInstruct-2 data", reason: "the full 14M dump contains only 81,069 unique gsm8k-derived problems (logs/count_full.log) and exp-02 already used 80,821 of them; more rows would be extra solutions to problems the model has seen twice"}
+    - {option: "microsoft/orca-math-word-problems-200k as 200k new problems", reason: "its answers are free prose with no answer field; the gold number would have to be guessed as 'last number in the text', which is exactly the wrong-target failure this protocol warns about"}
+    - {option: "A third epoch of the exp-02 corpus", reason: "the 1.0/1.5/2.0-epoch checkpoints scored 0.633/0.600/0.680 at n=150 - flat within noise, so more passes over the same targets is not where the headroom is"}
+    - {option: "DPO on correct/incorrect sample pairs", reason: "the pairs exist (29.7k incorrect samples were generated), but preference training is a bigger unknown than RFT with under 5 h left and one GPU"}
+    - {option: "Pure RFT with no replay of the exp-02 corpus", reason: "42k self-generated rows over 22.5k problems is a narrower distribution than the parent was trained on; 15k replay rows cost 8 minutes and bound the drift"}
+  pitfalls_hit:
+    - {what: "vLLM offline sampling of 100k completions ran at 8.2k output tok/s, slower than the estimate; 25k problems x k=4 took 34.5 min rather than the ~20 planned", cost_h: 0.25, fix: "kept the problem bank at 25k of the 50k built; the other 25k stay in data/rft_problems.jsonl for a later round"}
+  smoke_runs:
+    - {command: [python, scripts/verify_format.py, data/rft_mix_exp04.jsonl], outcome: "57212 rows, 0 with a bad stop token, 0 with a duplicated ANSWER marker; p50 323 tokens, max 3034"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/decon_rft_rows.jsonl], outcome: "42212 self-generated documents scanned, 0 contaminated, 0 matches (the 25k problems were separately checked clean before sampling: logs/decon_rft.log)"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "The incumbent's failures are single-shot reliability, not missing knowledge. Sampling it 4 times at temperature 0.9 on 25,000 held-out GSM-style problems, 90.0% of problems are solved at least once but only 70.3% of individual samples are correct. On the benchmark it gets exactly one attempt, and 144 of 500 dev items come back with a wrong number after a chain of thought that no longer has any formatting defect."
+  evidence:
+    - {path: /home/ben/task/logs/exp-04_sample.log, locator: "final line", observation: "samples correct 70300/100000 (70.3%); problems solved at least once 22491/25000 (90.0%)"}
+    - {path: /home/ben/task/analysis/exp-03_greedy_dev500_failure_tags.json, locator: "nontermination_share_of_failures=0.0", observation: "all 144 failures are content errors"}
+  affected_share: 1.0
+  failure_examples: []   # dev failures are benchmark test items; not copied into the record (rule 7)
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Continuing training from exp-02/final on 42,212 of the incumbent's own verified-correct samples (plus 15k replay rows from the exp-02 corpus) raises greedy dev-500 accuracy against exp-03."
+  mechanism: "Rejection sampling turns the gap between pass@4 (90.0%) and pass@1 (70.3%) into supervision: every kept target is a chain of thought this model can actually produce and that reaches the gold answer, so the update concentrates probability mass on its own successful trajectories rather than on a teacher's out-of-distribution phrasing. Because the targets are on-policy, the greedy path - which is what the benchmark scores - is pulled toward the reasoning that verifies."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+1 to +5 points"}
+  falsified_if: "greedy dev-500 accuracy at both saved epochs is at or below exp-03's 0.712, or the non-termination share of failures rises above 0.05 (self-training collapsed the output distribution)."
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix_exp04.jsonl
+      source: "synthetic:self (exp-02/final samples) + derived:exp-02 replay"
+      n_examples: 57212
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --problems, data/rft_problems_25k.jsonl, --out, data/rft_exp04.jsonl, --k, "4", --temperature, "0.9", --top-p, "0.95", --max-tokens, "640", --max-per-problem, "2", --fewshot-frac, "0.15", --seed, "0"]
+      selection: "k=4 samples per problem at T=0.9; kept only samples that inspect's own match_str(location='end', numeric=True) scores correct against gold and that contain 'ANSWER:' exactly once; dedup, then up to 2 distinct samples per problem chosen at random -> 42212 rows over 22491 problems. Problem bank: 12.5k OpenMathInstruct-2 gsm8k/augmented_gsm8k problems + 12.5k MetaMathQA GSM_Rephrased/GSM_AnsAug queries, all GSM8K-TRAIN-derived. Mixed with 15000 rows drawn at random from the exp-02 corpus as replay."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, same completion-only token-budget trainer as exp-02"
+    peft: "none (full fine-tune; vision tower frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 2.0, batch_size: 8192, grad_accum: 8, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "<self-generated reasoning>\\n\\nANSWER: <number><end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/rft_mix_exp04.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-04, --max-seq-len, "3072", --token-budget, "8192", --grad-accum, "8", --lr, "5e-6", --epochs, "2", --scheduler, cosine, --warmup, "0.03", --seed, "0", --save-steps, "550", --save-total-limit, "6"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04_train.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 550
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.3}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, scripts/set_gen_config.py, "{checkpoint}", --mode, greedy, "&&", python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official inspect_evals/gsm8k test split via --limit 500 (first 500 items, no shuffle), greedy decode config per exp-03"
+    n: 500
+    seed: 42
+  comparator: {ref: exp-03, value: 0.712, path: /home/ben/task/eval/exp-03_greedy_dev500.json}
+  diagnostic:
+    what: "non-termination share of failures (self-training on own samples can collapse the output distribution into loops)"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.19
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-550, step: 550}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1100, step: 1100}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1180, step: 1180}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1180}
+  training_summary:
+    final_loss: 0.2097
+    steps: 1180
+    notes: "34.7M tokens over 2 epochs of 57208 rows (4 dropped for length); loss flat at 0.21-0.23 throughout - the parent already fits its own samples, which is the point and also the warning sign; peak GPU 55.7 GB"
+  measurements:
+    - {metric: accuracy, value: 0.726, n: 500, path: /home/ben/task/eval/exp-04_final_greedy_dev500.json, delta_vs_comparator: 0.014}
+    - {metric: accuracy, value: 0.714, n: 500, path: /home/ben/task/eval/exp-04_ck550_greedy_dev500.json, delta_vs_comparator: 0.002}
+    - {metric: accuracy, value: 0.7119, n: 1319, path: /home/ben/task/eval/exp-04_final_greedy_full.json, delta_vs_comparator: -0.0023}
+    - {metric: accuracy, value: 0.7134, n: 1319, path: /home/ben/task/eval/exp-04_ck550_greedy_full.json, delta_vs_comparator: -0.0008}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-04_final_greedy_dev500_failure_tags.json
+    notes: "0 of 137 failures carry text after the first 'ANSWER:' line - no distribution collapse from self-training, but also no gain"
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-500 went 0.712 -> 0.726 (+1.4), which looked like a win until it was paired: on the same 500 items RFT fixes 41 and breaks 34, McNemar exact p=0.49. Extending both to the full 1319-item test set settles it - exp-03 0.7142, RFT 1 epoch 0.7134, RFT 2 epochs 0.7119, a spread of 0.2 points against a stderr of 0.012. Rejection-sampling fine-tuning on this model's own verified samples bought nothing."
+  decision: reject
+  next_step: "The pass@4 - pass@1 gap (90.0% vs 70.3%) is real but self-distillation does not close it: the parent already assigns high likelihood to its own correct samples (RFT loss started at 0.21 and never moved), so there is almost no gradient signal in them. Closing it would need a signal the model does not already have - a verifier, preference pairs against the 29.7k incorrect samples, or a stronger teacher. Remaining time goes to a weight-average of the two trajectories (exp-05) and then to packaging final_model."

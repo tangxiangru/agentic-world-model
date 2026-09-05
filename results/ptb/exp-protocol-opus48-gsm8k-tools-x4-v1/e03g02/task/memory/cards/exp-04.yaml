@@ -1,0 +1,106 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-05T00:18:52Z'
+situation:
+  elapsed_h: 1.75
+  remaining_h: 8.3
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/merged
+    score: {metric: accuracy, value: 0.38, protocol_n: 150}
+  trigger: "exp-03 (few-shot SFT) OOMed at epoch 1 on the fp32 262k-vocab logits (batch 8 x seq 2688). Loss was descending healthily; only memory failed. Retry with a memory-safe config."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.failure OOM"}
+  alternatives_rejected:
+    - {option: "keep seq 2688 with batch 1", reason: "too slow (>2h) and still risks the logits spike; left-truncation to 1536 preserves the target and fits memory"}
+    - {option: "abandon few-shot, iterate 0-shot", reason: "exp-02 diagnosis shows the answer-then-continue loss is a 10-shot-context mismatch that few-shot training directly fixes"}
+  pitfalls_hit:
+    - {what: "Gemma3 computes loss over full 262144-vocab logits; fp32 upcast at batch8 x seq2688 = 13.7GiB spike -> OOM", cost_h: 0.67, fix: "max_seq_len 1536 + left-truncation + batch 4; expandable_segments to cut fragmentation"}
+    - {what: "editing train_sft.py after lock blocked exp-03 close (script hash mismatch)", cost_h: 0.05, fix: "revert edit, close, re-apply; then lock exp-04 with the new script"}
+  smoke_runs:
+    - {command: [python, -c, "cpu prefix/EOT/length recheck of few-shot rows"], outcome: "all rows: BOS first, target ends at EOT after trim; left-trunc keeps completion tail"}
+problem:
+  statement: "Trained 0-shot, exp-02 does not reliably stop after its first answer in the eval's 10-shot context (19/93 wrong were correct-then-continue, 33 multi-ANSWER). The few-shot fix is sound but exp-03's memory config was infeasible."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "n=150 acc 0.38", observation: "answer-then-continue losses"}
+  affected_share: 0.20
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Few-shot-structured SFT (k solved GSM8K-train examples + target question, left-truncated to 1536) teaches answer-once-and-stop and moves n=150 accuracy above exp-02's 0.38."
+  mechanism: "Matching the eval's multi-shot input and always terminating the single target with <end_of_turn> makes EOT the learned continuation after 'ANSWER: N', removing the continuation losses so correct-first answers become gradable."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+8 to +15 pts"
+  falsified_if: "n=150 accuracy <= 0.38, or multi-ANSWER outputs remain >15% of samples."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train_fewshot.jsonl
+      source: local
+      n_examples: 7473
+      built_by: /home/ben/task/prep_data_fewshot.py
+      build_command: [python, prep_data_fewshot.py, data/gsm8k_train_fewshot.jsonl, "0"]
+      selection: "GSM8K train; each row = k in {2,3,4,5,6,8,10,10} random other-train examples as fewshots (grader format, clean reasoning) + target question; completion = clean reasoning + 'ANSWER: N'. Rows > max_seq_len are LEFT-truncated at train time (drop earliest fewshots, keep BOS+completion)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + peft 0.18.1 LoRA"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=language_model q,k,v,o,gate,up,down"
+    hyperparams: {lr: 2.0e-4, epochs: 3, batch_size: 4, grad_accum: 8, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "reasoning then 'ANSWER: <int>' then <end_of_turn>; completion-only loss (prompt incl. fewshots masked); left-truncation preserves the target tail"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/gsm8k_train_fewshot.jsonl, --out, /home/ben/task/ckpts/exp-04/merged, --epochs, "3", --lr, "2e-4", --bs, "4", --grad-accum, "8", --max-seq-len, "1536", --lora-r, "64", --lora-alpha, "128", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.5
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04/merged, --limit, "150", --json-output-file, /home/ben/task/eval/exp-04_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.38
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "share of dev-150 outputs with >1 ANSWER block (multi-answer continuation)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.4
+  output_checkpoint: /home/ben/task/ckpts/exp-04/merged
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/merged, step: 700}
+  training_summary: {final_loss: 0.3725, steps: 700, notes: "3 epochs, few-shot data, left-trunc @1536, batch4x8; train_runtime 5026s; no OOM"}
+  measurements:
+    - {metric: accuracy, value: 0.5267, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.1467}
+  diagnostic_result: {value: 0.0, path: /home/ben/task/eval/exp-04_dev150.json, notes: "multi-ANSWER blocks 33->0; correct-then-continue losses 19->0. Stopping fully fixed. All 71 remaining failures are genuine reasoning/arithmetic errors."}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Few-shot-aware SFT lifts n=150 accuracy 0.38 -> 0.527 (+14.7). Diagnostic confirms the mechanism: multi-ANSWER continuation outputs fell 33->0 and every correct-first answer is now gradable. Eval wall time also dropped (2.5min->44s) as outputs stop cleanly."
+  decision: adopt
+  next_step: "exp-05: attack the 71 genuine reasoning errors via rejection-sampling fine-tuning (STaR) -- sample solutions from exp-04 on GSM8K-train questions, keep correct ones, augment training data. final_model currently = exp-04 (0.527)."

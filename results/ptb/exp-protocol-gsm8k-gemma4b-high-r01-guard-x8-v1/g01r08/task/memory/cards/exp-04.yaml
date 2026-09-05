@@ -1,0 +1,108 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T22:56:57Z'
+situation:
+  elapsed_h: 4.5
+  remaining_h: 5.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.6267, protocol_n: 150}
+  trigger: "The exp-02 eval log shows vLLM printing 'Default sampling parameters have been overridden by the model's Hugging Face generation config': the harness never sets a temperature, so every eval so far has decoded with the BASE model's generation_config.json - do_sample true, top_k 64, top_p 0.95, temperature 1.0. The checkpoint's own generation config is therefore a knob I control and have not yet set."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/exp-02_eval.log, locator: "'Default sampling parameters have been overridden' line", observation: "vLLM takes its default sampling params from the checkpoint's generation_config.json"}
+    - {path: /home/ben/task/ckpts/exp-03/final/generation_config.json, locator: "whole file", observation: "inherited from the base snapshot: do_sample true, top_k 64, top_p 0.95, no temperature -> vLLM samples at temperature 1.0"}
+    - {path: /home/ben/task/analysis/exp-03_format_fail.json, locator: format_fail_share, observation: "0/150 format failures, so what is left to win is answer correctness, and sampling noise costs correctness"}
+  alternatives_rejected:
+    - {option: "Pass a temperature on the evaluate.py command line", reason: "evaluate.py is immutable and exposes no temperature flag; the generation config is the only supported route"}
+    - {option: "Skip this and spend the hour on more training", reason: "one eval (~12 min) tests a change worth several points and it also decides what generation_config final_model ships with"}
+    - {option: "Low-but-nonzero temperature (0.2) with top_p 0.9", reason: "greedy is the limiting case and needs no extra tuning budget; if greedy loses, the sampled config is already measured"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "Under the harness, exp-03 decodes with temperature 1.0 / top_k 64 / top_p 0.95 inherited from the base model's generation_config.json. For a 4B model on multi-step arithmetic, sampling at temperature 1.0 throws away accuracy relative to greedy decoding: a single wrong digit sampled mid-chain changes the final number the grader reads."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_dev150.json, locator: accuracy, observation: "0.6267 +/- 0.0396 with sampled decoding"}
+    - {path: /home/ben/task/logs/diag_stop.log, locator: "[zeroshot] line", observation: "the same family of checkpoints reaches 0.76 on held-out dev items under GREEDY decoding (different prompt style, so not a direct comparison, but it is the greedy number)"}
+  affected_share: null
+  failure_examples:
+    - {id: sampling-1, source: /home/ben/task/analysis/exp-03_format_fail.json, question: "harness items scored in eval/exp-03_dev150.json", gold: "see eval log", model_output: "well-formed ANSWER line with a wrong number in 37% of items", failure: "arithmetic/reasoning error; part of it is sampling noise rather than model ignorance"}
+  watch_set:
+    path: /home/ben/task/data/dev_train300.jsonl
+    n: 300
+    selection: "held-out GSM8K TRAIN tail, excluded from all training data"
+hypothesis:
+  claim: "Shipping a greedy generation_config.json (do_sample false, temperature 0.0) with the exp-03 weights raises harness accuracy at n=150 relative to the same weights decoded with the inherited sampling defaults."
+  mechanism: "vLLM seeds its default SamplingParams from the checkpoint's generation_config.json. At temperature 1.0 the model can sample a low-probability token inside an arithmetic chain, and one bad digit propagates to the final answer; greedy always takes the argmax chain the SFT distribution puts most mass on."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +8 points"}
+  falsified_if: "greedy scores at or below 0.6267 on the same n=150 protocol"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/dev_train300.jsonl
+      source: openai/gsm8k
+      n_examples: 300
+      built_by: null
+      build_command: [python, -c, "gsm8k train tail"]
+      selection: "no training in this card; the weights are exp-03's, only generation_config.json differs (mixture_weight 0)"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 via inspect_ai
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-03"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04-greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6', --json-output-file, /home/ben/task/eval/exp-04_greedy_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-04_eval.log
+  output_dir: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.6']
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.6267
+    path: /home/ben/task/eval/exp-03_dev150.json
+  diagnostic:
+    what: "format-fail share must stay at 0 under greedy decoding (a greedy model can also fall into repetition loops)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.15
+  output_checkpoint: /home/ben/task/ckpts/exp-04-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04-greedy, step: 1092}
+  training_summary: {final_loss: null, steps: null, notes: "no training; exp-03 weights (symlinked safetensors) with a greedy generation_config.json"}
+  measurements:
+    - {metric: accuracy, value: 0.7067, n: 150, path: /home/ben/task/eval/exp-04_greedy_dev150.json, delta_vs_comparator: 0.08}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-04_format_fail.json
+    notes: "0/150 format failures under greedy decoding too - no repetition loops"
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-04_format_fail.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, greedy generation_config: 0.6267 -> 0.7067 (+8.0 points, n=150), and still 0/150 format failures. Eight points were being lost to the base model's inherited temperature-1.0 sampling defaults, which the harness silently adopts from the checkpoint."
+  decision: adopt
+  next_step: "final_model must ship this greedy generation_config. exp-05: rejection-sampling fine-tuning from exp-03/final to attack the remaining ~29% arithmetic/reasoning errors."

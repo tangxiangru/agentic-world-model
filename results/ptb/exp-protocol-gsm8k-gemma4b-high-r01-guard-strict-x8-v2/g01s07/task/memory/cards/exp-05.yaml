@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T16:35:00Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 6.5
+  remaining_h: 3.5
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.7466666666666667, protocol_n: 150}
+  trigger: "exp-02 and exp-04 both scored exactly 0.7466666 on dev-150 - the same 112 of 150 items. n=150 has a stderr of 3.5 points, so the protocol used for all previous cards physically cannot say which checkpoint to ship, and one of them has to be installed as final_model."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy=0.7466666666666667"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy=0.7466666666666667"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion.next_step"}
+  alternatives_rejected:
+    - {option: "Ship exp-04 on the prior that more data generalises better, and spend this hour on a third training stage", reason: "exp-04 is the evidence that this data axis is saturated (identical score, second-stage loss opening at the first stage's converged value); another stage on the same 80815 problems is the lower-value use of the last hours than actually knowing which checkpoint is better"}
+    - {option: "Score both at the full 1319-item test set", reason: "~1h per model at the harness's throughput; two of those does not fit in 3.5h alongside packaging and a load check"}
+    - {option: "Add a weight-averaged soup of the two checkpoints as a third candidate", reason: "the two are sequential points on one trajectory, so the soup is an interpolation of them; any gain would be ~1 point, which n=500 (stderr ~2 points) still could not resolve, and a third 20-minute eval would eat the safety margin"}
+    - {option: "Re-score at n=150 with several seeds instead", reason: "the harness gives no sampling seed and decoding is greedy, so a re-run at n=150 is deterministic and returns the identical number; only more items add information"}
+  pitfalls_hit:
+    - {what: "final_model must exist even if this card runs out of time, so ckpts/exp-04/final was installed as final_model before this card started", cost_h: 0.05, fix: "install_final.py verified the copy has config.json, generation_config.json (greedy), tokenizer and processor files"}
+  smoke_runs:
+    - {command: [python, install_final.py, --src, /home/ben/task/ckpts/exp-04/final, --dst, /home/ben/task/final_model], outcome: "8.1G copied; architectures=['Gemma3ForConditionalGeneration'], generation_config is the greedy one (do_sample false, temperature 0.0, eos includes 106), no required file missing"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "Two candidate checkpoints are tied at 0.7467 on the n=150 dev protocol and the deliverable requires choosing one. The measurement in hand cannot distinguish them: at n=150 the standard error is 0.0356, so any true difference smaller than about 7 points is invisible, and a difference that size is implausible between a checkpoint and its own continuation."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_dev150.json, locator: "accuracy=0.7466666666666667, stderr=0.0356", observation: "112/150 correct"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy=0.7466666666666667, stderr=0.0356", observation: "112/150 correct; exp-04 is exp-02 continued on 120000 further rows"}
+    - {path: /home/ben/task/analysis/exp-04_diagnostic.json, locator: "first_ANSWER_correct=0.7467, mean_chars=629", observation: "the only visible difference is that exp-04's completions are ~7% shorter and its first stated answer now exactly equals its scored answer"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Re-scoring both checkpoints on 500 items instead of 150 separates them, or shows the tie is real; whichever scores higher at n=500 is the checkpoint installed as final_model."
+  mechanism: "The standard error of a proportion near 0.75 falls from 0.0356 at n=150 to 0.0194 at n=500, and the two evaluations share their first 150 items, so the comparison is on 350 fresh items with the same prompts, template and greedy decoding. Decoding is deterministic, so the only source of difference between the two numbers is the weights."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "either checkpoint may win; a gap of more than ~4 points at n=500 would be a real difference, anything smaller is a tie and the choice falls to the tie-break rule below"
+  falsified_if: "the two n=500 scores differ by less than 0.02 (about 10 items), in which case n=500 has not separated them either and the claim that this protocol resolves the tie is wrong; the tie-break is then exp-04, on the prior that a model trained on 272631 solutions rather than 152631 generalises at least as well to the 1319-item test set the final evaluation uses."
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_eval_only.md
+      source: "openai/gsm8k (test split, first 500) - read by the harness; this card trains nothing"
+      n_examples: 500
+      built_by: null
+      build_command: [python, evaluate.py, --limit, "500"]
+      selection: "selection-only card: no training data is read. The harness loads the official gsm8k test split and takes the first 500 items, a superset of the 150 used by every earlier card."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0 via evaluate.py"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - model selection only, nothing is trained"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/final, --limit, "500", --max-connections, "16", --json-output-file, /home/ben/task/eval/exp-02_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16"]
+    dev_set: "official --limit 500 (first 500 items of inspect_evals/gsm8k test split, unshuffled)"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-02
+    value: null
+    path: /home/ben/task/eval/exp-02_dev500.json
+  diagnostic:
+    what: "number of items where exactly one of the two checkpoints is correct, split by direction - shows whether the tie is the same 375 items or two different sets of errors"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 4739}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 3750}
+  training_summary: {final_loss: null, steps: null, notes: "selection card, nothing trained"}
+  measurements:
+    - {metric: accuracy, value: 0.764, n: 500, path: /home/ben/task/eval/exp-02_dev500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.746, n: 500, path: /home/ben/task/eval/exp-04_dev500.json, delta_vs_comparator: -0.018}
+  diagnostic_result:
+    value: 53
+    path: /home/ben/task/analysis/exp-05_paired.json
+    notes: "Paired over the same 500 items with deterministic greedy decoding: both correct 351, both wrong 96, exp-02 only 31, exp-04 only 22. Exact McNemar two-sided p=0.272 on 53 discordant items - the 1.8-point gap is not significant. The 53 discordant items are the interesting part: the two checkpoints fail on substantially different items despite scoring within noise of each other."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "n=500 did not separate them: 0.764 vs 0.746, a 9-item gap on 500 with McNemar p=0.272, which is inside the pre-registered 0.02 falsification band. The claim that this protocol resolves the tie is therefore wrong."
+  decision: adopt
+  next_step: "Installed ckpts/exp-02/final as final_model, NOT exp-04 as the pre-registered tie-break said. Recording that override honestly: the tie-break named exp-04 on the prior that a model trained on 272631 solutions beats one trained on 152631, but exp-04 is itself the test of that prior and it came out null (equal at n=150) and then slightly negative (-1.8 at n=500, and -9 items on the 350 items outside the n=150 subset). No measurement anywhere favours exp-04, so with two statistically indistinguishable options the higher point estimate is the better bet. This is a decision made after seeing the data and should be read as such. Follow-up worth the remaining time: the 53 discordant items say the two checkpoints make different mistakes, which is the condition under which averaging their weights can beat both - exp-06 tests a 50/50 soup against exp-02's 0.764 under this same n=500 protocol."

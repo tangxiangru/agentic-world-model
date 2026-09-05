@@ -238,6 +238,13 @@ def _ptb(args: argparse.Namespace) -> int:
     from awm import ptb_experiments as ptb
 
     try:
+        if args.cmd == "release":
+            receipt = ptb.release_held(args.receipt)
+            print(
+                f"released {len(receipt['jobs'])} held job(s): "
+                f"{','.join(str(job['job_id']) for job in receipt['jobs'])}"
+            )
+            return 0
         manifest = ptb.load_manifest(args.manifest)
         if args.cmd == "results":
             import json
@@ -271,7 +278,7 @@ def _ptb(args: argparse.Namespace) -> int:
                 print(f"{cell_id}: {command}")
             return 0
         if args.cmd == "submit":
-            receipt = ptb.submit(manifest, pilot=args.pilot)
+            receipt = ptb.submit(manifest, pilot=args.pilot, keep_held=args.keep_held)
             print(receipt)
             return 0
         if args.cmd == "retry":
@@ -283,7 +290,7 @@ def _ptb(args: argparse.Namespace) -> int:
                 print(f"{job['cell_id']}: Slurm job {job['job_id']}")
             return 0
         if args.cmd == "audit":
-            issues = ptb.audit_result(args.result_dir.resolve())
+            issues = ptb.audit_result(args.result_dir.resolve(), expected_task=args.expected_task)
             for issue in issues:
                 print(f"  - {issue}")
             print(f"{len(issues)} issue(s)")
@@ -336,12 +343,21 @@ def _slurm_queue(args: argparse.Namespace) -> int:
             while True:
                 snapshot = slurm_queue.collect_snapshot(registry)
                 if args.json:
-                    print(json.dumps(snapshot, indent=2, sort_keys=True))
+                    view = (
+                        slurm_queue.select_subqueue(snapshot, args.subqueue)
+                        if args.subqueue
+                        else snapshot
+                    )
+                    print(json.dumps(view, indent=2, sort_keys=True))
                 else:
                     if args.watch:
                         print("\033[2J\033[H", end="")
                     print(
-                        slurm_queue.render_snapshot(snapshot, include_jobs=not args.summary),
+                        slurm_queue.render_snapshot(
+                            snapshot,
+                            include_jobs=not args.summary,
+                            subqueue=args.subqueue,
+                        ),
                         end="",
                     )
                 if not args.watch:
@@ -382,7 +398,9 @@ def _slurm_queue(args: argparse.Namespace) -> int:
             return 0
         if args.cmd == "register-receipt":
             path = slurm_queue.register_receipt(
-                args.receipt, label=args.label, registry_path=registry
+                args.receipt,
+                label=args.label,
+                registry_path=registry,
             )
             print(path)
             return 0
@@ -398,6 +416,7 @@ def _slurm_queue(args: argparse.Namespace) -> int:
                 args.job_id,
                 label=args.label,
                 source_id=args.source_id,
+                subqueue=args.subqueue,
                 registry_path=registry,
             )
             print(path)
@@ -431,6 +450,7 @@ def build_parser() -> argparse.ArgumentParser:
     queue.add_argument("--registry", type=Path)
     queue.add_argument("--json", action="store_true")
     queue.add_argument("--summary", action="store_true")
+    queue.add_argument("--subqueue", metavar="NAME")
     queue.add_argument("--watch", type=int, metavar="SECONDS", default=0)
     queue.set_defaults(func=_slurm_queue)
     failures = slurm.add_parser(
@@ -469,6 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_job.add_argument("job_id")
     register_job.add_argument("--label", required=True)
     register_job.add_argument("--source-id")
+    register_job.add_argument("--subqueue", metavar="NAME")
     register_job.add_argument("--registry", type=Path)
     register_job.set_defaults(func=_slurm_queue)
     monitor_start = slurm.add_parser(
@@ -572,6 +593,12 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
         if command_name in ("dry-run", "submit"):
             command.add_argument("--pilot", action="store_true")
+        if command_name == "submit":
+            command.add_argument(
+                "--keep-held",
+                action="store_true",
+                help="register formal jobs but leave them PENDING(JobHeldUser)",
+            )
         if command_name == "check":
             command.add_argument("--local-only", action="store_true")
             command.add_argument(
@@ -592,15 +619,21 @@ def build_parser() -> argparse.ArgumentParser:
     results.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
     results.add_argument("--all", action="store_true", help="also show incomplete latest attempts")
     results.add_argument("--json", action="store_true")
-    results.add_argument("--task", choices=["gsm8k", "aime2025"])
+    results.add_argument("--task", choices=["gsm8k", "aime2025", "humaneval"])
     results.add_argument("--cell", action="append")
     results.set_defaults(func=_ptb)
     retry = eps.add_parser("retry", help="atomically retry explicit failed formal cells")
     retry.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
     retry.add_argument("--cell", action="append", required=True)
     retry.set_defaults(func=_ptb)
+    release = eps.add_parser(
+        "release", help="release one held formal receipt after ownership and placement checks"
+    )
+    release.add_argument("receipt", type=Path)
+    release.set_defaults(func=_ptb)
     audit = eps.add_parser("audit")
     audit.add_argument("result_dir", type=Path)
+    audit.add_argument("--expected-task", help="independent task identity, required to prove completion")
     audit.add_argument("--manifest", type=Path, default=default_manifest)
     audit.set_defaults(func=_ptb)
     for command_name in ("status", "audit-receipt", "research-judges"):

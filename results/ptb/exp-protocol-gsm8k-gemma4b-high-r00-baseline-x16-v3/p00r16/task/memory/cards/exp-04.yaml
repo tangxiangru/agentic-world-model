@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T08:25:00Z'
+situation:
+  elapsed_h: 1.05
+  remaining_h: 8.95
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.4667, protocol_n: 150}
+  trigger: "exp-03 died at step 4 of 6680 with a 16.84 GiB OOM on the logits tensor. The mixture hypothesis it was written to test is untested; this card re-runs it with memory-safe batching."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.failure", observation: "batch 32 x up to 1024 tokens = 32768 tokens; at gemma-3's 262144 vocabulary that is 16.8 GiB of bf16 logits and ~34 GiB more for the fp32 cross-entropy upcast"}
+    - {path: /home/ben/task/eval/exp-02_probe300.json, locator: "summary.accuracy=0.44; 297/300 clean answer lines", observation: "formatting is solved after exp-02, so the remaining 53% of errors are reasoning"}
+  alternatives_rejected:
+    - {option: "Just lower --bs to 8 and keep row-count batching", reason: "it would fit, but a fixed row count over a length-bucketed corpus sizes every batch for the worst bucket: the short-row batches (p50 is 320 tokens) would run at a third of the GPU's useful occupancy"}
+    - {option: "Cap max_seq_len at 768 to shrink the worst bucket", reason: "p99 is 648 and max 1023; cutting to 768 drops ~1.5% of rows, and the dropped ones are the long multi-step solutions this card is trying to learn from"}
+    - {option: "Keep 2 full epochs", reason: "launched at 2 epochs, then killed after 17 steps once the measured rate (3.73 s/step over 4574 steps) put it at 4h43m of an 8h53m remaining budget. Re-locked at 1 epoch: 213885 rows is a large corpus where one pass is the standard setting, and truncating a 2-epoch cosine half way would leave the model at ~50% of peak LR instead of an annealed floor."}
+    - {option: "Shrink the mixture to ~150k rows to buy the time instead", reason: "the row count is the thing most likely to be buying the improvement; cutting the second epoch costs less than cutting data"}
+  pitfalls_hit:
+    - {what: "OOM on the logits tensor at batch 32 (exp-03): with a 262k vocabulary, training memory is driven by padded tokens per micro-batch, not rows", cost_h: 0.15, fix: "TokenBudgetBatches in train_sft3.py builds micro-batches to a 12288-padded-token cap, so peak memory is flat across length buckets"}
+    - {what: "running my probe eval and evaluate.py concurrently killed both vLLM servers (gpu_memory_utilization is a fraction of *total* GPU memory)", cost_h: 0.1, fix: "one vLLM server at a time"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft3.py, --model, base_gemma3_pt, --data, data/sft_mix.jsonl, --out, /tmp/x, --max-seq-len, '1024', --max-tokens-per-batch, '12288', --max-rows-per-batch, '64', --dry-run], outcome: "213735/213885 rows kept (0.070% dropped); 6860 micro-batches/epoch, rows/batch p50=32 max=50, padded tokens/batch p50=12062 max=12288 - the cap binds, so peak memory is constant"}
+problem:
+  statement: "After exp-02 the model answers in the right format but is wrong on 53% of held-out grade-school problems. Its entire supervision is 6973 problems from one source, written in one style, with terse chains that compress intermediate arithmetic into single lines."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_probe300.json, locator: "168 of 300 probe items incorrect; 297/300 clean answer lines", observation: "errors are reasoning, not presentation: the model terminates and formats correctly and still gets the number wrong"}
+    - {path: /home/ben/task/data/sft_gsm8k.jsonl, locator: "6973 rows", observation: "exp-02's whole corpus; median row 274 tokens including prompt"}
+  affected_share: 0.56
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "first 300 of the last 500 GSM8K *train* items (indices 6973-7272), held out from every training file. Not the benchmark test set."
+hypothesis:
+  claim: "Training the base checkpoint on the 213885-row mixture (gsm8k train x3 + OpenMathInstruct-2 gsm8k/augmented_gsm8k + MetaMathQA GSM rewrites) raises accuracy on the official --limit 150 protocol above exp-02's 0.4667."
+  mechanism: "Format is already solved, so extra supervision can only buy reasoning. The mixture adds three things gsm8k's train split does not have: 73k harder augmented variants of the same problem type, 112k paraphrases and backward-reasoning rewrites that decouple the answer from surface phrasing, and solutions that spell out intermediate arithmetic instead of compressing it."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+8 to +20 pts"
+  falsified_if: "accuracy on the official --limit 150 protocol is at or below exp-02's 0.4667, or probe300 does not improve on exp-02's 0.440"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/base_gemma3_pt
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix.jsonl
+      source: "openai/gsm8k main/train[0:6973] x3 + nvidia/OpenMathInstruct-2 train_1M filtered to problem_source in {gsm8k, augmented_gsm8k} + meta-math/MetaMathQA type startswith GSM. All three derive from GSM8K's *train* split and MATH's train split; none touches the GSM8K test split."
+      n_examples: 213885
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/pool_omi2.jsonl, --gsm8k, '0', --omi2, '220000']
+      selection: "dedup by problem text within each source; numeric final answers only; \\boxed{} unwrapped; 'The answer is: X' and gsm8k's '#### N' tails stripped; every row ends with exactly one 'ANSWER: <gold><end_of_turn>'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, completion-only loss, token-budget micro-batches (scripts/train_sft3.py)"
+    peft: "none (full fine-tune of the 3.9B language model; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 1.0e-05, epochs: 1, batch_size: 12288, grad_accum: 3, max_seq_len: 1024, scheduler: cosine_with_min_lr_0.1, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "prompt = templates/gemma3.jinja render of [user: MATH_PROMPT_TEMPLATE(question)] with add_generation_prompt; target = chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>. batch_size above is padded TOKENS per micro-batch, not rows (rows/batch p50=32)."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft3.py, --model, base_gemma3_pt, --data, data/sft_mix.jsonl, --out, /home/ben/task/ckpts/exp-04, --lr, '1e-5', --epochs, '1', --max-tokens-per-batch, '12288', --max-rows-per-batch, '64', --grad-accum, '3', --max-seq-len, '1024', --save-steps, '760']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft3.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 760
+    keep: 3
+  budget:
+    gpu: H100-80GB
+    planned_h: 2.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.4667
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "probe300 (held-out GSM8K train tail) greedy accuracy, same prompt the harness builds"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 2.3
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 2287}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-2280, step: 2280}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1520, step: 1520}
+  training_summary: {final_loss: 0.2343, steps: 2287, notes: "8270s wall, 25.8 samples/s (vs 18.9 for exp-02's row-count batching); loss 0.23 at step 760 falling to 0.213 at the end"}
+  measurements:
+    - {metric: accuracy, value: 0.4, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: -0.0667}
+  diagnostic_result:
+    value: 0.4733
+    path: /home/ben/task/eval/exp-04_probe300.json
+    notes: "greedy probe300 0.4733 vs exp-02's 0.4400, +3.3 pts. The two metrics disagree because they decode differently: the official protocol samples at temperature 1.0 / top_p 0.95 / top_k 64 (vLLM takes those defaults from the checkpoint's generation_config.json), the probe is greedy. Under sampling exp-04 is markedly less robust than exp-02: clean 'ANSWER: N' final lines 119/150 vs 147/150, unterminated completions 12/150 vs 0/150. On the greedy probe the same weakness shows smaller but real: 22/300 do not stop, 229/300 clean answer lines, against exp-02's 2/300 and 297/300."
+  watch_set_result: {fixed: 53, still_failing: 115, regressions: 43, path: /home/ben/task/analysis/exp-04_watch.json}
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "On the locked protocol exp-04 scores 0.400 against exp-02's 0.4667, so the claim as written is contradicted. But the mechanism it predicted did happen: on identical greedy decoding of 300 held-out train items the mixture is +3.3 pts (0.4733 vs 0.4400) and fixes 53 items exp-02 got wrong. What the mixture also did was break termination - 12/150 official completions never emit <end_of_turn> and only 119/150 end in a clean answer line, against 0 and 147 for exp-02 - and under temperature-1.0 sampling that costs more than the reasoning gain is worth."
+  decision: iterate
+  next_step: "Two follow-ups, in order. exp-05: the harness never sends a temperature, so vLLM decodes with whatever generation_config.json ships in the checkpoint - set it to greedy and measure, since sampling is what is amplifying exp-04's rambling. exp-06: rejection-sampling fine-tuning from exp-04, whose data is self-generated and therefore always terminated and always carries exactly one answer line, to repair termination without giving back the reasoning gain."

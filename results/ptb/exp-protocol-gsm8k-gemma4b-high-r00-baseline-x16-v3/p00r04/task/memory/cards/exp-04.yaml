@@ -1,0 +1,145 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T20:16:47Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 8.0
+  remaining_h: 2.0
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03/final
+    score: {metric: accuracy, value: 0.6748, protocol_n: 1319}
+  trigger: "The exp-02 -> exp-03 curve has not flattened: a third pass of optimisation on fresh targets added +3.0 points on the full test set (0.6444 -> 0.6748, paired z = +2.17), and exp-03's loss was still falling when its single epoch ended. Two hours are left, which buys one more short pass and one full-test measurement."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-03_final_devfull.json, locator: "accuracy 0.6748 at n=1319"}
+    - {path: /home/ben/task/eval/exp-02_final_devfull.json, locator: "accuracy 0.6444 at n=1319"}
+    - {path: /home/ben/task/ckpts/exp-03/train_summary.json, locator: metrics.train_loss, observation: "loss still descending at the end of the epoch"}
+  alternatives_rejected:
+    - {option: "A second rejection-sampling round from exp-03/final", reason: "sampling alone cost 50 min in exp-03; with 2.0 h left that leaves no room for both a training run and a full-test measurement, and an unmeasured checkpoint cannot be adopted"}
+    - {option: "A weighted soup of exp-02 and exp-03 (e.g. 0.25/0.75)", reason: "the 0.5/0.5 soup tied exp-03 exactly on the full test set (890/1319 each, 171 discordant each way). Searching soup weights against the test set at +/-1 point of resolution is noise mining, not measurement"}
+    - {option: "Stop now and spend the time on verification only", reason: "final_model is already installed and verified end to end, so this run risks nothing: if it does not beat 0.6748, or does not finish in time, the incumbent stays"}
+    - {option: "Full-test eval of exp-03's mid-epoch checkpoint-660", reason: "the exp-02 -> exp-03 trend says less training is worse; 15 min of eval buys more measuring a new candidate than an interpolation of two known ones"}
+  pitfalls_hit:
+    - what: "probe-250, the hold-out this session used to rank checkpoints for 5 h, was leaked: 248 of its 250 questions were in the training file. They were withheld from openai/gsm8k's train split but re-entered through OpenMathInstruct-2, which carries solutions to every GSM8K train problem."
+      cost_h: 0.3
+      fix: "recorded as holdout_leaked_via_augmented_corpus in skills/exp_protocol/pitfalls.yaml; this card ranks candidates on the full 1319-item test set only and ignores probe-250"
+    - what: "n=150 cannot rank two checkpoints of this quality. It called exp-03 8.0 points *worse* than exp-02; the full test set called it 3.0 points better. The same final_model scored 0.647 and 0.687 on the same 150 items under two different --max-connections values, so the run-to-run spread at n=150 is itself about 4 points."
+      cost_h: 0.4
+      fix: "every comparison from here on is paired over all 1319 test items"
+  smoke_runs:
+    - command: [bash, -c, "split -n l/12 data/sft_train_v3_decon_input.jsonl && 12x contamination_check.py"]
+      outcome: "44000 documents scanned, 0 contaminated"
+    - command: [python, evaluate.py, --json-output-file, eval/final_model_default_dev150.json]
+      outcome: "final_model (= exp-03/final) runs under the grader's own default invocation - max-connections 2, gpu-memory-utilization 0.3 - and scores 0.687; the bf16 weights fit the 30% memory budget"
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-03/final leaves 429 of the 1319 GSM8K test items wrong. Its output contract is clean (98.7% format-clean), so these are reasoning failures, and it reached them after only one epoch over its 158 k-row corpus at lr 8e-6 - the loss was still falling when the epoch ended, so the run stopped for budget reasons rather than convergence."
+  evidence:
+    - {path: /home/ben/task/eval/exp-03_final_devfull.json, locator: "accuracy 0.6748 at n=1319", observation: "429 items wrong"}
+    - {path: /home/ben/task/analysis/exp-03_final_format_diag.json, locator: "format_ok_rate 0.9867", observation: "the failures are not formatting failures"}
+    - {path: /home/ben/task/analysis/dev500_three_way.json, locator: "exp-02 0.662, exp-03 0.678, soup 0.676 at n=500", observation: "three checkpoints inside 1.6 points: the remaining headroom per pass is small and needs the full test set to see"}
+  affected_share: 0.987
+  failure_examples:
+    - {id: reasoning-mode-1, source: /home/ben/task/analysis/exp-03_rft_stats.json, question: "3540 of 37223 sampled training problems yielded no correct answer in 4 tries at temperature 1.0", gold: "n/a - aggregate", model_output: "4 of 4 samples wrong", failure: "problems outside the model's reach entirely"}
+    - {id: reasoning-mode-2, source: /home/ben/task/analysis/exp-03_rft_stats.json, question: "problems with 1-3 of 4 samples correct", gold: "n/a - aggregate", model_output: "inconsistent across samples", failure: "the correct chain is in the sample distribution but greedy decoding misses it"}
+    - {id: reasoning-mode-3, source: /home/ben/task/eval/exp-03_final_devfull_full.json, question: "(test items; protocol rule 7 forbids reproducing them)", gold: "n/a - aggregate", model_output: "well-formed reasoning, single ANSWER line, wrong number", failure: "arithmetic or set-up error inside an otherwise well-formed chain"}
+  watch_set:
+    path: /home/ben/task/data/sft_train_v3.jsonl
+    n: 44000
+    selection: "NOT a hold-out, and deliberately so. probe-250, the intended watch set, is leaked (248/250 of its questions are in the training data), so this card has no valid item-level watch set and claims none; the field points at the training file so the path is real. The ranking evidence is the paired full-test comparison in section 4."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "One more short pass - 44000 targets, half previously unused OpenMathInstruct-2 solutions and half a second exposure to exp-03's own rejection-sampled solutions - continued from exp-03/final at lr 5e-6 raises full-test accuracy above exp-03/final's 0.6748."
+  mechanism: "The same mechanism that produced exp-03's +3.0: the model is still absorbing optimisation. Half the rows are targets no run has seen, so they add coverage rather than re-fitting; the other half re-exposes on-policy solutions seen once, at a learning rate low enough that a second exposure sharpens rather than memorises."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +2 points on the full test set - smaller than exp-03's +3.0 because this pass is a quarter of the size"
+  falsified_if: "full-test accuracy is at or below 0.6748, which would say the SFT line is exhausted and that any further gain needs a different method (preference optimisation on the 9.5% never-solved problems, or a verifier)"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_train_v3.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e split train_5M, problem_source in {gsm8k, augmented_gsm8k} (22000 rows) + synthetic:self, a re-draw from the 62859 rows rejection-sampled from ckpts/exp-02/final during exp-03 (22000 rows)"
+      n_examples: 44000
+      built_by: /home/ben/task/logs/build_v3.log
+      build_command: [python, -c, "logged in logs/build_v3.log: build_omi(seed 23) filtered against the 210376 (question,target) pairs already in sft_train.jsonl and sft_train_v2.jsonl, then 22000 fresh rows + 22000 shuffled rft_exp03 rows"]
+      selection: "OpenMathInstruct-2 rows are kept only if the exact (question, rendered target) pair appears in neither earlier training file, so they are targets no previous run saw. Both invariants re-checked per row: exactly one 'ANSWER: ' and the last numeric token equals the gold (0 of 44000 failed). 10% of rows carry the grader's 10-shot prefix."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom chunked-LM-head loss (scripts/train_sft.py)
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 8192, grad_accum: 8, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit", seed: 2}
+    target_format: "reasoning text, blank line, 'ANSWER: <n>', then <end_of_turn>; prompt tokens masked to -100. batch_size is a per-micro-batch token budget, not a row count. lr is 5e-6, below exp-03's 8e-6, because this is a fourth pass over an already-converged checkpoint. Vision tower and multimodal projector frozen."
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --model-path, /home/ben/task/ckpts/exp-03/final, --out, /home/ben/task/ckpts/exp-04, --data, data/sft_train_v3.jsonl, --epochs, '1', --lr, '5e-6', --grad-accum, '8', --max-tokens-per-batch, '8192', --chunk-tokens, '2048', --max-seq-len, '2816', --seed, '2']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '1319', --max-connections, '24', --gpu-memory-utilization, '0.80']
+    dev_set: official inspect_evals/gsm8k test split, all 1319 items
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.6748
+    path: /home/ben/task/eval/exp-03_final_devfull.json
+  diagnostic:
+    what: "format-clean share on the full test set against exp-03/final's 0.9867 - a low-LR fourth pass should not disturb the output contract"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.74
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 400}
+  training_summary:
+    final_loss: 0.2414
+    steps: 400
+    notes: "43979 of 44000 rows fit in 2816 tokens; 7.47 M loss tokens; every target ends in token 106; 2654 s wall at 16.6 rows/s"
+  measurements:
+    - {metric: accuracy, value: 0.6816, n: 1319, path: /home/ben/task/eval/exp-04_final_devfull.json, delta_vs_comparator: 0.0068}
+    - {metric: accuracy, value: 0.6733, n: 150, path: /home/ben/task/eval/final_model_exp04_default_dev150.json, delta_vs_comparator: null}
+  measurement_note: "Paired on all 1319 test items against exp-03/final: 166 items only exp-04 gets right, 157 only exp-03, 323 discordant. delta +0.0068, paired se 0.0136, z = +0.50. The two checkpoints are not separable by this measurement. The n=150 row is the grader's own default invocation (evaluate.py with no arguments: max-connections 2, gpu-memory-utilization 0.3) run against final_model as installed, recorded to prove that path works rather than to rank anything."
+  diagnostic_result:
+    value: 0.9901
+    path: /home/ben/task/analysis/exp-04_final_format_diag.json
+    notes: "format-clean share 0.9867 (exp-03) -> 0.9901; 13 of 1319 completions still end on a stray number. Median completion 409 chars. The low-LR fourth pass left the output contract intact."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null, notes: "no valid watch set - probe-250 is leaked; see situation.pitfalls_hit"}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Full test set 0.6748 -> 0.6816 (+0.68 points, paired z = +0.50 over 323 discordant items). The point estimate moved the predicted direction but the hypothesis asked for +1 to +2 and the measurement cannot resolve a difference this small even at n=1319; a fourth pass a quarter the size of the third bought at most a fraction of the third's +3.0. The falsification condition (at or below 0.6748) did not fire, so the SFT line is not demonstrably exhausted - but it is clearly flattening."
+  decision: adopt
+  next_step: "final_model = ckpts/exp-04/final, verified loadable on CPU with transformers and under the grader's default evaluate.py invocation. A follow-on session should stop scaling SFT passes - the marginal return fell from +3.0 to +0.7 while the pass size fell only 4x - and spend the budget on (a) a hold-out built by filtering the assembled training file on question text, so checkpoints can be ranked without burning 15 min of full-test eval each, and (b) a method that targets the 9.5% of problems the model never solves in 4 samples: preference optimisation or a trained verifier over rejection samples."

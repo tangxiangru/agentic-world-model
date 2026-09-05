@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T15:05:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.2
+  remaining_h: 4.8
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05-greedy
+    score: {metric: accuracy, value: 0.7267, protocol_n: 150}
+  trigger: "The format failure is fixed and decoding is greedy, so what is left is content: exp-05 misses 41 of 150 dev items. Rejection sampling from exp-04 over the training problems shows the model already solves 90% of them at least once in k samples (pass rate 0.706), so there is a large pool of on-policy correct traces to train on (analysis/rft_stats.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "whole file", observation: "32473 problems, 159784 samples, 70.6% correct, 90.0% of problems solved at least once, 55406 kept rows (<=2 per problem)"}
+    - {path: /home/ben/task/analysis/exp-05_diagnostic.json, locator: "whole file", observation: "0.727 accuracy, format compliance 0.993 - the remaining loss is reasoning, not formatting"}
+  alternatives_rejected:
+    - {option: "Another epoch of OpenMathInstruct-2 teacher data", reason: "exp-03 already did a full epoch over 158k of those rows; the marginal row is a third solution to a problem the model has seen twice"}
+    - {option: "DPO on correct/incorrect sample pairs", reason: "needs a pair builder and a second trainer with about 4h left; RFT reuses the trainer that is already locked in and measured"}
+    - {option: "Sample and train only on the 7473 real GSM8K train problems", reason: "10x less data for the same wall-clock; the augmented problems come from the same train split and add coverage"}
+  pitfalls_hit:
+    - {what: "rejection sampling took 50 min rather than the 35 estimated (159784 sequences at ~8.4k output tok/s)", cost_h: 0.25, fix: "trimmed the training file to 40k rows so the run still fits the budget"}
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "exp-05 gets 41 of 150 dev items wrong, and all of them are reasoning or arithmetic failures rather than format failures. The model's training signal so far is entirely off-policy: 405B-generated solutions in someone else's phrasing, one epoch, plus 12k format rows."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_diagnostic.json, locator: "whole file", observation: "accuracy 0.727, ends_with_answer_line 0.993, no repeated markers - the residual is content"}
+    - {path: /home/ben/task/analysis/rft_stats.json, locator: "pass_rate", observation: "0.706 of the model's own samples on training problems are already correct, so its own correct traces are a large, on-distribution training set"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "One epoch of rejection-sampling fine-tuning on 40k of exp-04's own answer-verified solutions (35% of them re-rendered with a GSM8K-TRAIN fewshot prefix) raises greedy dev-150 accuracy above exp-05's 0.727."
+  mechanism: "The kept traces are on-policy - the model's own phrasing and its own solution paths - filtered so only those reaching the gold answer survive. Training on them sharpens the paths it already half-knows and suppresses the ones that drift, which is the classic RFT effect; the 35% fewshot-prefixed share keeps the graded 10-shot condition represented so the turn-ending behaviour learned in exp-04 is not undone."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "+1 to +5 points"}
+  falsified_if: "greedy dev-150 accuracy at or below 0.727, or format compliance below 0.98"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mixed.jsonl
+      source: "synthetic:self (samples from ckpts/exp-04/final on GSM8K TRAIN and OpenMathInstruct-2 augmented_gsm8k problems)"
+      n_examples: 40000
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, data/rft_raw.jsonl, --k, '4', --k-gsm8k, '8', --n-aug, '25000', --temp, '1.0', --keep-per-problem, '2', --stats, analysis/rft_stats.json]
+      selection: "k=8 samples for each of the 7473 GSM8K TRAIN questions and k=4 for 25000 augmented_gsm8k problems at temperature 1.0/top_p 0.95; keep a sample only if it contains exactly one ANSWER marker and that number equals gold; at most 2 distinct kept per problem; the kept text is re-emitted as body + 'ANSWER: <gold><end_of_turn>'. Then mix_prefix.py took the first 40000 of the shuffled rows and re-rendered 35% of them with a k=10 (2/3) or k~U{1..9} GSM8K-TRAIN fewshot system block, dropping rows over 2560 tokens."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, torch 2.8.0"
+    peft: "none (full fine-tune; vision tower and projector frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "bf16 weights + bf16 autocast, 8-bit AdamW, gradient checkpointing", seed: 0}
+    target_format: "unchanged: solution body, blank line, 'ANSWER: N', then <end_of_turn>; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/rft_mixed.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, ckpts/exp-06, --bs, '4', --grad-accum, '8', --lr, '5e-6', --epochs, '1', --max-seq-len, '2560', --grad-checkpointing, --save-steps, '400', --dtype, bf16]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-06_train.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 400
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.3}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k test in harness order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7267
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "format compliance (end-in-ANSWER-line share) must stay >=0.98 - the RFT rows are 65% zero-shot, so this checks the 10-shot stopping behaviour survived"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.55
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 1250}
+  training_summary: {final_loss: 0.202, steps: 1250, notes: "7.1 samples/s; no OOM; loss lower than exp-04's 0.253, as expected when training on the model's own outputs"}
+  measurements:
+    - {metric: accuracy, value: 0.6933, n: 150, path: /home/ben/task/eval/exp-06_dev150.json, delta_vs_comparator: -0.0334}
+  diagnostic_result:
+    value: 0.993
+    path: /home/ben/task/analysis/exp-06_diagnostic.json
+    notes: "format compliance held (149/150 end in an ANSWER line, one greedy repetition loop), so the 35% fewshot-prefixed share did its job; mean completion 554 chars"
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "Greedy dev-150 0.727 -> 0.693 (-3.3, about one standard error of 0.038): rejection-sampling fine-tuning did not improve on exp-05 and may have cost a little. Training loss fell to 0.202, i.e. the model fit its own traces, but that did not convert into accuracy - plausibly because at a 0.71 pass rate the kept traces are dominated by problems it already solves, so the epoch mostly reinforces what it can do while pulling it off the stronger 405B-distilled style it was trained on."
+  decision: reject
+  next_step: "keep exp-05 (exp-04 weights + greedy decode) as the incumbent; spend the remaining budget on a larger-n comparison between exp-05 and exp-06 so the final pick is not made on a 3-point difference at n=150."

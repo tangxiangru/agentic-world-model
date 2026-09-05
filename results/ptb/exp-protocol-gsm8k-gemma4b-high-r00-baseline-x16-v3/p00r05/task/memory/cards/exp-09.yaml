@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-09
+created_at: '2026-09-02T18:27:20Z'
+situation:
+  elapsed_h: 6.1
+  remaining_h: 3.9
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.718, protocol_n: 500}
+  trigger: "exp-08 settled the submission on exp-05 (0.7180 over 500 items), which is now installed as final_model. Its diagnostic shows exactly one mechanical failure left: 7 of 500 completions (1.4%) run to the 4000-token cap in a greedy repetition loop and emit no ANSWER marker at all - those items are lost for a reason that has nothing to do with the model's arithmetic."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp05_dev500_wrong.jsonl, locator: "not_stopped 7, no_answer_marker 7, max_out_chars 11667", observation: "the same 7 items fail both ways, mean completion is 614 chars so these are 20x outliers"}
+    - {path: /home/ben/task/analysis/exp03_dev500_wrong.jsonl, locator: "not_stopped 7 of 500", observation: "the same 1.4% tax on the other checkpoint - it is a property of greedy decoding here, not of one training run"}
+  alternatives_rejected:
+    - {option: "Accept the 1.4% loss and stop", reason: "one file write and one 500-item eval, both reversible, against 1.4 points of pure mechanical loss; 3.9 h remain"}
+    - {option: "Go back to sampled decoding, which had 0/150 loops", reason: "exp-03 measured that trade directly: sampling costs 16 points to save ~1.4"}
+    - {option: "presence_penalty or frequency_penalty, which act on output tokens only", reason: "vLLM's get_diff_sampling_param reads only repetition_penalty, temperature, top_k, top_p, min_p and max_new_tokens from the model dir (vllm/config/model.py:1367); the other two cannot be reached without modifying evaluate.py"}
+    - {option: "repetition_penalty 1.05 or 1.1", reason: "vLLM applies repetition_penalty over prompt tokens as well as generated ones, and the graded prompt carries a ~2050-token 10-shot prefix, so almost every common token is already 'seen'; 1.02 is the mildest setting that can still break a loop"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "GenerationConfig.from_pretrained('ckpts/exp-09-reppen').to_diff_dict()"], outcome: "vLLM-readable sampling params are exactly {'repetition_penalty': 1.02, 'temperature': 0.0} - greedy is preserved and no top_k/top_p leak back in"}
+problem:
+  statement: "7 of 500 graded completions from the submitted model never terminate: they repeat until the 4000-token cap, so no 'ANSWER:' line is ever written and the grader's last-number rule reads whatever the loop was emitting. That is 1.4 accuracy points lost to decoding, not to reasoning."
+  evidence:
+    - {path: /home/ben/task/analysis/exp05_dev500_wrong.jsonl, locator: "the 7 items with no ANSWER marker", observation: "not_stopped 7, no_answer_marker 7, max completion 11667 chars against a 614-char mean"}
+    - {path: /home/ben/task/eval/exp05_dev500.json, locator: "accuracy 0.718", observation: "0.718 + 0.014 = 0.732 is the ceiling if every loop were converted to a correct answer"}
+  affected_share: 0.05
+  failure_examples:
+    - {id: exp05-loop1, source: /home/ben/task/analysis/exp05_dev500_wrong.jsonl, question: "dev-500 item whose completion hits the 4000-token cap", gold: "see file", model_output: "repeats a phrase until the cap; no ANSWER line", failure: "greedy repetition loop"}
+    - {id: exp05-loop2, source: /home/ben/task/analysis/exp05_dev500_wrong.jsonl, question: "second capped dev-500 item", gold: "see file", model_output: "same shape", failure: "greedy repetition loop"}
+    - {id: exp05-loop3, source: /home/ben/task/analysis/exp05_dev500_wrong.jsonl, question: "third capped dev-500 item", gold: "see file", model_output: "same shape", failure: "greedy repetition loop"}
+  watch_set:
+    path: /home/ben/task/analysis/exp05_dev500_wrong.jsonl
+    n: 141
+    selection: "every dev-500 item exp-05 gets wrong under greedy decoding; the 7 non-terminating ones are the subset this card targets"
+hypothesis:
+  claim: "Adding repetition_penalty 1.02 to the submitted checkpoint's generation_config.json, weights untouched, reduces the number of non-terminating completions on dev-500 below 7 and does not decrease accuracy relative to exp-05's 0.7180."
+  mechanism: "A repetition loop is a fixed point of greedy decoding: the argmax token reproduces a state whose argmax is the same token. Dividing the logits of already-seen tokens by 1.02 perturbs that fixed point enough to escape it, while a 2% logit shift is too small to change the argmax anywhere the model is confident - which is most of an arithmetic chain."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+0 to +1.4 pts; bounded above by the 7/500 loops"
+  falsified_if: "non-terminating completions stay at 7 or more, or dev-500 accuracy falls below 0.7180."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-09-reppen/generation_config.json
+      source: "local - weights byte-identical to exp-05/final; only generation_config.json differs"
+      n_examples: 1
+      built_by: null
+      build_command: [python, -c, "write generation_config.json with repetition_penalty 1.02 and temperature 0.0"]
+      selection: "temperature 0.0, repetition_penalty 1.02, do_sample false; no top_k/top_p"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 (--generation-config auto)
+    peft: none
+    hyperparams: {}
+    target_format: "unchanged: chain, then a single 'ANSWER: <number>' line, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/exp-09-reppen, exp09_dev500, '500']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/exp-09.log
+  output_dir: /home/ben/task/ckpts/exp-09-reppen
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.25}
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, '{checkpoint}', '{tag}', '500']
+    dev_set: "official --limit 500 (gsm8k test, dataset order), greedy decode pinned by generation_config.json"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.718
+    path: /home/ben/task/eval/exp05_dev500.json
+  diagnostic:
+    what: "the count of non-terminating completions out of 500 (exp-05: 7). This is the mechanism, and it is measurable directly - unlike the 1.4-pt accuracy effect, which n=500 cannot resolve unpaired; a paired McNemar over the same 500 items is reported alongside."
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.05
+  output_checkpoint: /home/ben/task/ckpts/exp-09-reppen
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-09-reppen, step: 3630}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights byte-identical to exp-05/final"}
+  measurements:
+    - {metric: accuracy, value: 0.724, n: 500, path: /home/ben/task/eval/exp09_dev500.json, delta_vs_comparator: 0.006}
+  diagnostic_result:
+    value: 6
+    path: /home/ben/task/analysis/exp09_watch_rerun.json
+    notes: "Non-terminating completions 7/500 -> 6/500. The penalty broke one loop out of seven. Mean completion 611 chars (vs 614), max 14092 (vs 11667) - the longest runaway got longer, not shorter."
+  watch_set_result: {fixed: 27, still_failing: 114, regressions: 24, path: /home/ben/task/analysis/exp09_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Accuracy 0.7180 -> 0.7240 (+0.6 pts) but the mechanism did not fire: 6 of the 7 repetition loops survived, and the 51 items that changed answer split 27 fixed / 24 broken with McNemar p=0.78. The +0.6 is churn, not the loop fix the card predicted."
+  decision: reject
+  next_step: "Keep plain greedy for the submission. The +0.6 pts is one fifth of a stderr and comes from items unrelated to the stated mechanism, so adopting it would mean shipping an unvalidated decode parameter - one whose interaction with the 2050-token 10-shot prefix is untested on the 819 test items outside dev-500 - to buy noise. exp-10 verifies final_model end-to-end as the grader will load it."

@@ -1,0 +1,103 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-05T01:51:44Z'
+situation:
+  elapsed_h: 3.3
+  remaining_h: 6.7
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/merged
+    score: {metric: accuracy, value: 0.5267, protocol_n: 150}
+  trigger: "exp-04 fixed stopping (0.527); all 71/150 remaining dev failures are genuine reasoning/arithmetic errors, not format. Need to improve reasoning capability."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "accuracy 0.527 n=150; 0 multi-answer"}
+  alternatives_rejected:
+    - {option: "higher LoRA rank / full fine-tuning on the same gold data", reason: "adds capacity but not new correct reasoning; RFT injects diverse self-generated correct chains that directly target the reasoning gap"}
+    - {option: "external math datasets (MetaMathQA/OpenMathInstruct)", reason: "GSM8K-test contamination risk; self-samples on GSM8K-train are clean by construction and checked"}
+  pitfalls_hit:
+    - {what: "vllm offline sampling double-BOS/stop-id risk (pitfall vllm_offline_prompt_and_stop)", cost_h: 0.0, fix: "use pinned awm.exp_protocol.sampling: prepare_prompts bos_policy=single_at_start (CPU-verified no double BOS), resolve_stop_ids=[106], raw draws preserved before parsing"}
+  smoke_runs:
+    - {command: [python, -c, "cpu prepare_prompts + resolve_stop_ids"], outcome: "first ids (2,105,2364) no double bos; prompt ends <start_of_turn>model\\n; stop_ids [106]"}
+problem:
+  statement: "exp-04 makes genuine arithmetic/logic errors on ~47% of dev items (correct format, wrong math). The gold GSM8K-train solutions are terse and single-path; the model needs more diverse correct reasoning to learn from."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "n=150", observation: "71 wrong, 0 format/continuation errors -> all reasoning errors"}
+  affected_share: 0.47
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Augmenting SFT with rejection-sampled self-generated correct solutions (STaR) from exp-04 on GSM8K-train raises n=150 accuracy above exp-04's 0.527."
+  mechanism: "Sampling multiple solutions per train question and keeping only those with the correct final answer yields diverse, in-distribution, verified reasoning chains in the model's own phrasing; training on them reinforces correct multi-step reasoning beyond the single terse gold path."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+3 to +8 pts"
+  falsified_if: "n=150 accuracy <= 0.527 (no improvement over exp-04)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/combined_rft.jsonl
+      source: derived:exp-04
+      n_examples: 7473
+      built_by: /home/ben/task/run_exp05.sh
+      build_command: [bash, run_exp05.sh]
+      selection: "original 7473 gold few-shot rows + self-samples from exp-04 (n=4 draws/q, temp 0.8, 4-shot prompts) filtered to correct final answer, exactly one ANSWER:, deduped, <=2 kept/question; contamination-checked before training (wrapper aborts if any test match)"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "vLLM 0.11.0 sampling (awm.exp_protocol.sampling) + transformers Trainer + peft LoRA"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=language_model q,k,v,o,gate,up,down"
+    hyperparams: {lr: 2.0e-4, epochs: 2, batch_size: 4, grad_accum: 8, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "reasoning then 'ANSWER: <int>' then <end_of_turn>; completion-only loss; left-truncation preserves target tail"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_exp05.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_exp05.sh
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 2.5
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-05/merged, --limit, "150", --json-output-file, /home/ben/task/eval/exp-05_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.5267
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "rejection-sampling yield: fraction of train questions with >=1 correct draw"
+    n: 7473
+    metric: accuracy
+    direction: higher
+result:
+  execution: failed
+  wall_h: 4.0
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "never reached training"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: "awm.exp_protocol.sampling.record_vllm calls _card_evidence which enforces 'every declared data file needs an existing pinned hash'. The card declares data/combined_rft.jsonl which is generated at runtime, so record_vllm raised ExecutionError right after the vLLM engine loaded. The EngineCore subprocess then failed to shut down and the process hung, consuming the 250-min wrapper timeout (~4h wall) before being killed. Root cause: the pinned sampling helper is incompatible with a single-card runtime-generated-data design."
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "RFT never ran: record_vllm's card check rejects a not-yet-existing declared training file, and the vLLM engine subprocess hung on the error, wasting ~4h. The STaR hypothesis is untested. final_model remains exp-04 (0.527)."
+  decision: iterate
+  next_step: "exp-06: plain vLLM sampling (CPU-verified single BOS + stop [106], no card-hash helper), time-boxed stages, continue-train from exp-04 on gold+RFT for 1 epoch; do not touch final_model until a better score is verified."

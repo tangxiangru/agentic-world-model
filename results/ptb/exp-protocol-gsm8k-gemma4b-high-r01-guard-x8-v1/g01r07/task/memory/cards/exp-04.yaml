@@ -1,0 +1,130 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-04T00:15:46Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.8
+  remaining_h: 4.2
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/checkpoint-1820
+    score: {metric: accuracy, value: 0.61333, protocol_n: 150}
+  trigger: "exp-03 scaled unique rows 2.5x and dev-150 did not move (0.6133 -> 0.6067), fixing 23 of the incumbent's failures while breaking 24 fresh ones. Off-policy data from the augmented_gsm8k pool is spent; the probe shows it improved that pool's own distribution (0.730 -> 0.765) without transferring."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp03_dev150.json, locator: "accuracy 0.60667"}
+    - {path: /home/ben/task/analysis/exp03_tags.json, locator: "watch-set diff vs exp-02: 23 fixed / 24 regressions / 35 still failing"}
+    - {path: /home/ben/task/analysis/exp03_probe.json, locator: "10shot 0.765 vs incumbent 0.730 on 400 held-out augmented_gsm8k items"}
+  alternatives_rejected:
+    - {option: "A third off-policy SFT run with the mixture reweighted toward real-GSM8K-derived rows", reason: "would take ~2 h of the 4.2 h left and only re-tests the axis exp-03 just closed; the on-policy data is both cheaper and a different axis"}
+    - {option: "DPO or GRPO on correct/incorrect pairs", reason: "the sampler produced 20491 wrong chains so pairs exist, but a preference/RL stage is the riskiest thing to debug with one shot left and no time to recover from a bad run"}
+    - {option: "Continue from exp-02/checkpoint-1820 instead of exp-03/final", reason: "the two are tied on dev-150 but exp-03 is ahead on the 400-item probe (0.765 vs 0.730), which resolves a delta n=150 cannot; and the RFT chains were sampled from exp-03, so it is the on-policy parent"}
+    - {option: "Keep every correct sample rather than at most 2 per problem", reason: "easy problems yield 4/4 correct and would flood the corpus with what the model already gets right; the cap keeps the mixture closer to uniform over problems"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model, ckpts/exp-03/final, --pool, data/rft_pool_v2.jsonl, --k, "4", --temp, "1.0"], outcome: "61892 samples in ~13 min at 7.8k output tok/s; pass@1 0.664, 13519/15473 problems solved at least once (0.874); 25249 chains kept after dedup and the 2-per-problem cap; 275 samples dropped for a missing ANSWER marker, 1 for a double marker"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/rft_check.jsonl], outcome: "25249 self-generated documents scanned, 0 contaminated, 0 matches"}
+    - {command: [python, "-c", "length audit of data/rft_mix.jsonl"], outcome: "p50 287 / p95 2268 / max 2542 tokens against max_seq_len 3328; 2000/2000 targets end in <end_of_turn> and carry exactly one 'ANSWER: '"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Both SFT checkpoints sit at ~0.61 on dev-150 with every remaining failure tagged reasoning_wrong, and they fail on different items - 23 fixed against 24 broken between them. The model can already produce a correct chain for most of these problems (pass@4 is 0.874 on train-side problems against a greedy pass@1 of 0.664); what it cannot do reliably is produce that chain on the first try."
+  evidence:
+    - {path: /home/ben/task/analysis/exp03_tags.json, locator: "tag=reasoning_wrong", observation: "59/150, 0 format failures"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "pass@1 0.664 vs problems-with-a-correct-sample 0.874", observation: "a 21-point gap between what the model can do in 4 tries and what it does in 1 - the competence is there but is not the mode of the distribution"}
+    - {path: /home/ben/task/analysis/exp03_tags.json, locator: "watch-set diff vs exp-02", observation: "23 fixed / 24 regressions: the two checkpoints differ by noise, not by capability"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "e3-reason-1", source: /home/ben/task/analysis/exp03_tags.json, question: "(dev item, gold 17; oranges)", gold: "17", model_output: "25 x .2 = 5 unripe / 25 x .02 = 0.5 = 1 bad / 2+1+5+1 = 9 not good / 25-9 = 16 -> ANSWER: 16", failure: "double-counts a category"}
+    - {id: "e3-reason-2", source: /home/ben/task/analysis/exp03_tags.json, question: "(dev item, gold 50; Henry's cookies)", gold: "50", model_output: "110 - 5 = 105 / 105/2 = 52.5 / 52 -> ANSWER: 26", failure: "misreads the relation then compounds it"}
+    - {id: "e3-reason-3", source: /home/ben/task/analysis/exp03_tags.json, question: "(the other 57 items are in the tag file)", gold: "(various)", model_output: "(well-formed chain, wrong number)", failure: "representative of the 59 reasoning_wrong items"}
+  watch_set:
+    path: /home/ben/task/analysis/exp03_tags_watch.jsonl
+    n: 59
+    selection: "every dev-150 item exp-03/final got wrong"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Fine-tuning exp-03/final for one epoch on 25,249 of its OWN chains that reached the reference answer, mixed with 15,000 real-GSM8K-derived SFT rows, scores higher on dev-150 than the 0.6133 incumbent."
+  mechanism: "The sampler measured a 21-point gap between pass@4 (0.874 of problems solved at least once) and greedy pass@1 (0.664). That gap is probability mass, not missing knowledge: the correct chain is already in the model's distribution but is not its mode. Training on the filtered correct samples is on-policy - the chains are in the model's own phrasing, so the update concentrates mass on paths it already takes rather than teaching a new style - and the answer-match filter removes exactly the branches that go wrong. The 15k real-GSM8K rows are carried along to stop the model narrowing onto its own output distribution."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +6 pts on dev-150"}
+  falsified_if: "dev-150 accuracy is at or below the incumbent's 0.6133, or the 400-item held-out probe is at or below exp-03's 0.765."
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/final
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_mix.jsonl
+      source: "synthetic:self (25249 rows sampled from exp-03/final) + derived:exp-03 (15000 rows of the exp-03 SFT corpus, restricted to the real-GSM8K-derived sources)"
+      n_examples: 40249
+      built_by: /home/ben/task/scripts/mix_rft.py
+      build_command: [python, scripts/mix_rft.py, --rft, data/rft_raw.jsonl, --sft, data/sft_big.jsonl, --n-sft, "15000", --sft-src, "gsm8k_train,omi2_gsm8k,metamath_GSM_Rephrased,metamath_GSM_AnsAug", --out, data/rft_mix.jsonl, --check-out, data/rft_check.jsonl, --kshot-frac, "0.06", --seed, "0"]
+      selection: "RFT half: 4 samples at temperature 1.0 per problem from 7473 openai/gsm8k TRAIN questions and 8000 OpenMathInstruct-2 augmented_gsm8k questions; keep a sample only if it carries exactly one ANSWER marker, that marker is the last thing in the chain, and the number matches the reference; dedup on the normalised chain and keep the 2 shortest per problem. SFT half: 6623 metamath_GSM_Rephrased, 4229 gsm8k_train, 4143 omi2_gsm8k, 5 metamath_GSM_AnsAug - every one derived from a GSM8K TRAIN item, none from augmented_gsm8k. 6% of rows carry the grader's exact 10-shot prefix."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "vllm 0.11.0 for sampling; transformers 4.57.3 Trainer with CompletionOnlyTrainer.compute_loss for the update"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 3328, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>; identical to exp-02 and exp-03. lr is halved to 5e-6 because this is a second pass over a model that has already converged once - exp-02 showed a full-strength second pass costs 4 pts."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_mix.jsonl, --model, /home/ben/task/ckpts/exp-03/final, --out, ckpts/exp-04, --epochs, "1", --lr, "5e-6", --bs, "16", --accum, "2", --max-seq-len, "3328", --save-steps, "1250", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1250
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test stream, --limit 150 (first 150 items in dataset order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.61333
+    path: /home/ben/task/eval/exp02_e1_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 400 held-out augmented_gsm8k problems, 10-shot (exp-02 0.730, exp-03 0.765) - n=400 resolves a delta dev-150 cannot, and none of these 400 problems is in any training corpus"
+    n: 400
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.51
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1258}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1250, step: 1250}
+  training_summary: {final_loss: 0.2474, steps: 1258, notes: "train_runtime 1825 s, 22.1 samples/s, 16.8M tokens; 0 of 40249 rows dropped over max_seq_len. Loss 0.247 vs 0.289 for the off-policy runs, as expected when the targets are the model's own text."}
+  measurements:
+    - {metric: accuracy, value: 0.67333, n: 150, path: /home/ben/task/eval/exp04_dev150.json, delta_vs_comparator: 0.06}
+  diagnostic_result:
+    value: 0.765
+    path: /home/ben/task/analysis/exp04_probe.json
+    notes: "400-item held-out probe: 10-shot 0.765 (exp-03 0.765, exp-02 0.730) - flat; 0-shot 0.7325 (exp-03 0.755) - down. So the +6 pts on dev-150 did NOT come with a gain on held-out augmented_gsm8k. reasoning_wrong fell 59 -> 49 of 150, format failures still 0."
+  watch_set_result: {fixed: 23, still_failing: 36, regressions: 13, path: /home/ben/task/analysis/exp04_tags.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.6133 -> 0.6733 (+6.0 pts vs the incumbent, +6.7 vs the parent exp-03), reasoning_wrong 59 -> 49, and for the first time the watch-set diff is lopsided in the right direction: 23 fixed against 13 regressions, where exp-03 was 23/24. The claim holds. The MECHANISM as written does not: it predicted a general sharpening of pass@1, but the 400-item held-out augmented_gsm8k probe stayed flat at 0.765 and its 0-shot arm fell from 0.755 to 0.7325 - so this is not the model getting broadly better at first-try correctness, it is the model being pulled toward the GSM8K-train distribution that supplied 48% of the RFT prompts and 100% of the SFT half of the mixture. Useful for this benchmark, and honest to record it as distribution targeting rather than as sharpening."
+  decision: adopt
+  next_step: "Installed at /home/ben/task/final_model and verified: loads from a fresh CPU process as Gemma3ForConditionalGeneration, 4.30B params, tokenizer present, eos_token_id [1,106]. exp-05 runs a second RFT round from this checkpoint on 7473 GSM8K-train problems plus 12000 fresh augmented_gsm8k problems; final_model is only replaced if exp-05 beats 0.6733 under the same protocol."

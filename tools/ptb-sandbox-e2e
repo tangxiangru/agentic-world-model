@@ -3,7 +3,7 @@
 # real scaffold and the real Claude Code, and no GPU:
 #
 #   the launcher materialises the checkout it would bind (read-only, like the
-#   :ro bind) -> agents/claude_vertex_max_awm/solve.sh runs under `env -i` with
+#   :ro bind) -> agents/<agent>/solve.sh (an `_awm` scaffold) runs under `env -i` with
 #   only the variables run_task.sh passes into the sandbox -> `awm sandbox setup`
 #   installs the protocol into an empty task dir -> Claude Code starts with the
 #   scaffold's exact arguments and is asked four things: is the exp_protocol
@@ -16,21 +16,34 @@
 # Claude Code (~/.claude/.credentials.json), which is copied into the fake home
 # for the run and deleted afterwards.
 #
-#   tools/ptb-sandbox-e2e [--model sonnet] [--keep]
+#   tools/ptb-sandbox-e2e [--agent claude_vertex_max_awm] [--model sonnet] [--scenario skill|stop-hook] [--keep]
+#
+# Scenario `stop-hook` (Round 00, cell p00r08): the setup also installs the Stop
+# hook, a locked card without a conclusion is planted, and Claude is told to end
+# its turn at once. The hook must block that in --print mode and say why; Claude
+# is then expected to close the card by hand and finish.
 set -euo pipefail
 
+AGENT="claude_vertex_max_awm"
 MODEL="sonnet"
+SCENARIO="skill"
 KEEP=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --agent) AGENT="${2:?}"; shift 2 ;;
         --model) MODEL="${2:?}"; shift 2 ;;
+        --scenario) SCENARIO="${2:?}"; shift 2 ;;
         --keep) KEEP=1; shift ;;
-        *) echo "usage: $0 [--model NAME] [--keep]" >&2; exit 2 ;;
+        *) echo "usage: $0 [--agent NAME] [--model NAME] [--scenario skill|stop-hook] [--keep]" >&2; exit 2 ;;
     esac
 done
+case "$SCENARIO" in skill|stop-hook) ;; *) echo "unknown scenario: $SCENARIO" >&2; exit 2 ;; esac
+SETUP_ARGS="--exp-protocol --tool claude"
+[ "$SCENARIO" = "stop-hook" ] && SETUP_ARGS="$SETUP_ARGS --stop-hook"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOLVE="$REPO/third_party/PostTrainBench/agents/claude_vertex_max_awm/solve.sh"
+SOLVE="$REPO/third_party/PostTrainBench/agents/$AGENT/solve.sh"
+PROFILE="$REPO/third_party/PostTrainBench/agents/$AGENT/profile.env"
 UPDATE="$REPO/third_party/PostTrainBench/src/utils/update_agent_cli.sh"
 [ -f "$SOLVE" ] || { echo "FAIL: $SOLVE missing; check out the PTB submodule at a commit with the scaffold" >&2; exit 1; }
 REAL_CLAUDE="$(command -v claude)" || { echo "FAIL: no claude on PATH" >&2; exit 1; }
@@ -84,6 +97,30 @@ exec "$REAL_CLAUDE" "\${args[@]}"
 SHIM
 chmod +x "$S/bin/claude"
 
+if [ "$SCENARIO" = "stop-hook" ]; then
+    # a locked card with sections 0-4 and no conclusion, as p00r08 left exp-02
+    mkdir -p "$S/home/task/memory/cards"
+    python3 - "$REPO/skills/exp_protocol/example-card.yaml" "$S/home/task/memory/cards/exp-01.yaml" <<'PYCARD'
+import sys
+text = open(sys.argv[1]).read()
+head = text.split("\n# ---- 5. Result", 1)[0] if "# ---- 5. Result" in text else text.split("\nresult:", 1)[0]
+head = head.replace("card_id: exp-03", "card_id: exp-01")
+open(sys.argv[2], "w").write(head.rstrip("\n") + "\n")
+PYCARD
+    echo '{"plan_sha256": "e2e", "locked_at": "2026-09-02T00:00:00Z"}' > "$S/home/task/memory/cards/exp-01.lock.json"
+    # ... and the run it launched died: the log ends in a CUDA OOM, no checkpoint was written
+    mkdir -p "$S/home/task/logs" "$S/home/task/ckpts/exp-03"
+    printf '%s\n' "step 40/1200 loss=0.912" "step 80/1200 loss=0.774" "Traceback (most recent call last):" \
+        '  File "rft_train.py", line 212, in <module>' "    trainer.train()" \
+        "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 7.81 GiB. GPU 0 has a total capacity of 79.10 GiB" \
+        > "$S/home/task/logs/exp-03_train.log"
+fi
+
+if [ "$SCENARIO" = "stop-hook" ]; then
+read -r -d '' PROMPT <<'PROMPT' || true
+This is a wiring check of the harness, not a training task; do not train anything. memory/cards/exp-01.yaml is a locked experiment card whose training run you launched earlier; that run crashed a while ago (logs/exp-03_train.log ends in a CUDA out-of-memory traceback; ckpts/exp-03 is empty). Reply with the single word WAITING and end your turn now, planning to come back to it later. Do nothing else.
+PROMPT
+else
 read -r -d '' PROMPT <<'PROMPT' || true
 This is a wiring check, not a training task. Do exactly these four things, then stop.
 1. Say whether a skill named exp_protocol is available to you in this session: answer SKILL=YES or SKILL=NO.
@@ -92,6 +129,7 @@ This is a wiring check, not a training task. Do exactly these four things, then 
 4. Invoke the exp_protocol skill, then report the title of its SKILL.md (the first line starting with # after the front matter) prefixed with TITLE=.
 Reply in plain text with those four lines and nothing else.
 PROMPT
+fi
 
 echo "checkout: $CHECKOUT"
 echo "running $SOLVE under env -i ..."
@@ -101,7 +139,7 @@ set +e
     PYTHONNOUSERSITE=1 NUM_GPUS=1 \
     PROMPT="$PROMPT" AGENT_CONFIG="claude-opus-5[1m]" \
     CLAUDE_CODE_USE_VERTEX=1 ANTHROPIC_VERTEX_PROJECT_ID=sercan-v1 ANTHROPIC_VERTEX_REGION=global \
-    AWM_SANDBOX_SETUP="--exp-protocol --tool claude" AWM_CHECKOUT_SHA="$SHA" \
+    AWM_SANDBOX_SETUP="$SETUP_ARGS" AWM_CHECKOUT_SHA="$SHA" \
     POST_TRAIN_BENCH_SKIP_CLI_UPDATE=1 PTB_SANDBOX_HOME="$S/home" \
     bash "$SOLVE" > "$S/solve_out.txt" 2>&1 )
 RC=$?
@@ -113,6 +151,44 @@ grep -q "^wrote CLAUDE.md" "$S/solve_out.txt" || fail "setup did not write CLAUD
 [ "$(readlink "$S/home/task/.claude/skills/exp_protocol")" = "../../skills/exp_protocol" ] || fail "skill symlink wrong"
 grep -q "\"sha\": \"$SHA\"" "$S/home/task/awm_sandbox.json" || fail "awm_sandbox.json does not carry the checkout sha"
 grep -qx -- "--setting-sources" "$S/claude.args" && grep -qx -- "project" "$S/claude.args" || fail "claude did not get --setting-sources project"
+# the effort the scaffold's profile.env declares is the one Claude Code was started with
+EFFORT="$(sed -n 's/^PTB_AGENT_EFFORT=//p' "$PROFILE")"
+[ -n "$EFFORT" ] || fail "$PROFILE declares no PTB_AGENT_EFFORT"
+[ "$(grep -A1 -x -- '--effort' "$S/claude.args" | tail -1)" = "$EFFORT" ] || fail "claude did not get --effort $EFFORT as profile.env declares"
+
+if [ "$SCENARIO" = "stop-hook" ]; then
+    grep -q 'stop_open_cards.py' "$S/home/task/.claude/settings.json" || fail "the Stop hook was not registered in .claude/settings.json"
+    grep -q "ENDS THE SESSION" "$S/solve_out.txt" || fail "the Stop hook never blocked: its reason is absent from the transcript"
+    python3 - "$S/solve_out.txt" "$S/home/task/memory/cards/exp-01.yaml" "$REPO/skills/exp_protocol/hooks/stop_open_cards.py" <<'PYHOOK' || fail "the guard did not hold"
+import importlib.util, json, sys
+result, blocks = None, 0
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        ev = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    if "ENDS THE SESSION" in line:
+        blocks += 1
+    if ev.get("type") == "result":
+        result = ev
+answer = (result or {}).get("result") or ""
+print(f"events mentioning the block: {blocks}")
+print("--- final answer ---"); print(answer)
+if result:
+    print(f"cost_usd={result.get('total_cost_usd')} turns={result.get('num_turns')} is_error={result.get('is_error')}")
+spec = importlib.util.spec_from_file_location("hook", sys.argv[3]); hook = importlib.util.module_from_spec(spec); spec.loader.exec_module(hook)
+closed = hook.card_is_closed(open(sys.argv[2]).read())
+print(f"card closed by hand: {closed}")
+# what matters: the hook blocked, and the card was closed truthfully before the turn ended
+ok = blocks >= 1 and closed
+sys.exit(0 if ok else 1)
+PYHOOK
+    echo "PASS: $AGENT: the Stop hook blocked the end of the turn in --print mode, said why, and the scientist closed the card before finishing"
+    exit 0
+fi
 
 python3 - "$S/solve_out.txt" <<'PY' || fail "Claude's answers do not show the protocol"
 import json, sys
@@ -149,4 +225,4 @@ if not any(name == "Skill" and inp.get("skill") == "exp_protocol" for name, inp 
     ok = False
 sys.exit(0 if ok else 1)
 PY
-echo "PASS: the skill reaches the sandbox, Claude Code loads it, and awm runs from the read-only checkout"
+echo "PASS: $AGENT (effort $EFFORT): the skill reaches the sandbox, Claude Code loads it, and awm runs from the read-only checkout"

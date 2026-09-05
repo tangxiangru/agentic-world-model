@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T21:20:57Z'
+
+situation:
+  elapsed_h: 3.0
+  remaining_h: 7.0
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.685, protocol_n: 200}
+  trigger: "exp-02 solved the output contract - format/termination is now 2 of 63 harness failures (3.2%) and mean output length is 151 tokens - so the 63 remaining errors are reasoning and arithmetic, which more of the same off-policy distillation data is the wrong tool for."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp02_n200_failuretags.json, locator: "format_or_termination_failures=2 of 63 wrong (0.032)"}
+    - {path: /home/ben/task/analysis/probe_exp02.json, locator: "accuracy=0.728, 68 of 250 probe items still wrong"}
+    - {path: /home/ben/task/analysis/rft_exp03_stats.json, locator: "pass_rate=0.668, coverage=0.869 over 32223 problems at k=4"}
+  alternatives_rejected:
+    - {option: "A second epoch over the same sft_v2 corpus", reason: "1.6 h for a repeat of data the model has already fit to loss 0.31; the failures are reasoning errors on problems it can already solve at k=4 two thirds of the time, which is precisely what rejection sampling exploits"}
+    - {option: "DPO on correct/incorrect sampled pairs", reason: "the sampling run gives the pairs for free, but preference training on a model this fresh off SFT is a larger risk per GPU-hour than RFT, and only ~4 h of usable budget remain after this card"}
+    - {option: "Train RFT data alone with no replay", reason: "52k rows all in the model's own post-SFT voice, all zero-shot, and with no augmented_math: a 25k-row replay slice of sft_v2 costs 12 min and keeps the teacher distribution, the few-shot-prefixed rows and the harder MATH-derived rows present"}
+    - {option: "k=8 sampling instead of k=4", reason: "the k=4 run already took 42 min and reached 86.9% coverage; doubling it would buy the tail of hard problems at the cost of the training block"}
+  pitfalls_hit:
+    - {what: "The container's root overlay is a 64 MB fuse-overlayfs and it filled with runtime __pycache__; liger_kernel/transformers/model/gemma3.py had silently become 13389 null bytes, so the first exp-03 launch died at apply_liger_kernel_to_gemma3 with 'source code string cannot contain null bytes'. A --force-reinstall then ran out of space mid-way while replacing torch's console scripts", cost_h: 0.15, fix: "removed the broken package, cleared the runtime __pycache__ (64M -> 12K used), reinstalled liger-kernel into /home/ben/task/pylibs on the big filesystem and put that on PYTHONPATH; verified no other dist-packages .py file is null-filled and that torch/transformers/vllm still import"}
+    - {what: "The 48-minute training run finished and then died in trainer.save_model: transformers validates model.generation_config strictly on save, and the parent checkpoint (exp-02/final) carries the greedy config this script writes (do_sample false + temperature 0.0), which the validator rejects. Only config.json reached disk; the weights were lost and the run had to be repeated", cost_h: 0.9, fix: "assign a plain valid GenerationConfig to the model before save_model and write the greedy generation_config.json afterwards, and save a mid-run checkpoint every 1200 steps so a save failure can never cost a whole run again"}
+    - {what: "3 of the first 20000 rows failed the last-number preflight check: rejection-sampled completions that wrote 'ANSWER: 20 $10 bills' or similar, which the grader would read as 10", cost_h: 0.05, fix: "dropped every row whose text after 'ANSWER: ' is not exactly one number (4 rows total); preflight then passed on 30000 rows"}
+  smoke_runs:
+    - {command: [python, scripts/preflight_data.py, --data, data/sft_exp03.jsonl, --max-seq-len, '1536', --n, '30000'], outcome: "template render byte-identical; 0/30000 bad stop token, bad marker or bad answer tail; 0.41% of rows over 1536 tokens"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, /home/ben/task/data/decon_input_exp03.jsonl], outcome: "77233 documents scanned, 0 contaminated"}
+
+problem:
+  statement: "exp-02 gets 68 of 250 probe items and 63 of 200 harness items wrong, and the errors are now substantive: it sets up a correct plan and then takes a wrong step. probe-006 inverts 'ate 1/6, 1200 g left' into 1200 g eaten; probe-010 reads '$20 remaining' as '20 bills'; probe-013 invents an unstated quantity mid-chain. The rejection-sampling run shows the model can in fact reach the right answer on 86.9% of a 32k problem set within 4 samples, so the greedy path - not the model's competence - is what is failing."
+  evidence:
+    - {path: /home/ben/task/analysis/probe_exp02.json, locator: "68 samples with correct=false", observation: "greedy zero-shot errors are wrong intermediate steps, not format"}
+    - {path: /home/ben/task/analysis/rft_exp03_stats.json, locator: "pass_rate=0.6676, problems_with_at_least_one_correct=27998/32223", observation: "at temperature 0.9 the model finds a correct chain for 86.9% of problems within k=4, far above its greedy accuracy"}
+  affected_share: 0.968
+  failure_examples:
+    - {id: probe-006, source: /home/ben/task/data/probe250.jsonl, question: "Sophia ate 1/6 of her pie and she put the rest on the fridge. If the pie left in the fridge weighs 1200 grams...", gold: '240', model_output: "...the pie is 6 x 1200 = 7200 grams. Since Sophia ate 1/6 of the pie, she ate 1/6 x 7200 = 1200 grams. ANSWER: 1200", failure: "treats 5/6 of the pie as the whole, then reports the leftover weight as the amount eaten"}
+    - {id: probe-010, source: /home/ben/task/data/probe250.jsonl, question: "Gail has some bills in her wallet which amount to $100. She has four $5 bills and three $20 bills, and the rest are $10 bills...", gold: '2', model_output: "...$100 - $80 = $20 So, Gail has 20 $10 bills in her wallet. ANSWER: 20", failure: "reports the remaining dollar amount as a bill count; never divides by 10"}
+    - {id: probe-013, source: /home/ben/task/data/probe250.jsonl, question: "Lou Senior took 3 cookies out of the cookie jar and ate them. Since he didn't get caught by his wife...", gold: '11', model_output: "...assume he ate 5 cookies. 7. The number of cookies remaining in the jar is 11 - 5 = 6 cookies. ANSWER: 6", failure: "invents an unstated quantity ('assume he ate 5') and subtracts it from the correct answer"}
+    - {id: probe-016, source: /home/ben/task/data/probe250.jsonl, question: "In her first term, Governor Sandoval gave twice as many commencement addresses as Governor Hawkins...", gold: '40', model_output: "...12 (Sandoval) + 24 (Hawkins) + 22 (Sloan) = 58 ANSWER: 58", failure: "swaps the 'twice as many' direction, so every downstream term is wrong"}
+  watch_set:
+    path: /home/ben/task/analysis/exp03_watch.jsonl
+    n: 68
+    selection: "every probe-250 item exp-02 gets wrong under the probe protocol (greedy, zero-shot)"
+
+hypothesis:
+  claim: "Continuing training from exp-02 on its own rejection-sampled correct solutions (52k rows, answer-verified, at most 2 per problem) mixed with a 25k-row replay slice of sft_v2 raises harness accuracy on n=200 above exp-02's 0.685."
+  mechanism: "The model reaches a correct chain for 86.9% of problems within 4 samples but only 68.5% greedily, so correct reasoning already has probability mass that the greedy path misses. Training on the verified samples moves mass onto chains this model actually produces - on-policy, in its own phrasing - which is a smaller and better-targeted update than more teacher text. The exact-match filter against gold means no incorrect chain is reinforced, and the replay slice keeps the teacher distribution, the few-shot-prefixed rows and the MATH-derived rows from being trained away."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+2 to +6 points on n=200"}
+  falsified_if: "n=200 accuracy is at or below exp-02's 0.685, or fewer than 10 of the 68 watch-set items are fixed, or probe regressions exceed the number of watch items fixed."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_exp03.jsonl
+      source: "synthetic:self (exp-02 samples over openai/gsm8k train and nvidia/OpenMathInstruct-2 augmented_gsm8k problems) + derived:exp-02 replay slice of sft_v2"
+      n_examples: 77229
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, scripts/gen_rft.py, --model, /home/ben/task/ckpts/exp-02/final, --out, data/rft_exp03_raw.jsonl, --stats, analysis/rft_exp03_stats.json, --k, '4', --temperature, '0.9', --n-augmented, '25000', --max-keep-per-problem, '2']
+      selection: "k=4 samples at temperature 0.9 / top_p 0.95 over 32223 problems (7223 non-held-out GSM8K train + 25000 OpenMathInstruct-2 augmented_gsm8k); keep only completions that stopped on their own, contain 'ANSWER: ' exactly once and whose final number equals gold (66.8% of 128892 samples); dedup identical texts, keep the 2 shortest per problem -> 52233 rows. Plus 25000 rows sampled uniformly from sft_v2 as replay. 4 rows dropped for writing units after the answer number."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE"
+    peft: "none (full parameter; vision tower and multimodal projector frozen)"
+    hyperparams: {lr: 7.0e-6, epochs: 1, batch_size: 32, grad_accum: 1, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "completion-only loss on '<solution>\\n\\nANSWER: <n><end_of_turn>'; identical shape to exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [env, 'PYTHONPATH=/home/ben/task/pylibs', python, scripts/train_sft.py, --data, /home/ben/task/data/sft_exp03.jsonl, --out, /home/ben/task/ckpts/exp-03, --parent, /home/ben/task/ckpts/exp-02/final, --bs, '32', --grad-accum, '1', --epochs, '1', --lr, '7e-6', --max-seq-len, '1536', --save-steps, '1200', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True', PYTHONPATH: /home/ben/task/pylibs}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 1200
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.9}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 200 (first 200 items, unshuffled)"
+    n: 200
+    seed: 42
+  comparator: {ref: exp-02, value: 0.685, path: /home/ben/task/eval/exp02_n200.json}
+  diagnostic:
+    what: "probe-250 accuracy under scripts/eval_probe.py (greedy, zero-shot, held-out GSM8K train problems); exp-02 = 0.728 at 150.6 mean output tokens"
+    n: 250
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.83
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 2404}
+  training_summary: {final_loss: 0.2230, steps: 2404, notes: "train_runtime 2997 s, 25.7 samples/s; 76,911 of 77,229 rows kept after the 1536-token filter. Second attempt: the first completed training and then died in save_model (see pitfalls_hit), costing 0.9 h."}
+  measurements:
+    - {metric: accuracy, value: 0.69, n: 200, path: /home/ben/task/eval/exp03_n200.json, delta_vs_comparator: 0.005}
+  diagnostic_result:
+    value: 0.736
+    path: /home/ben/task/analysis/probe_exp03.json
+    notes: "probe-250 0.728 -> 0.736 (+0.8), mean output 150.6 -> 148.5 tokens. Both deltas are well inside the n=200 stderr of 0.033 and the probe's own noise. A side measurement worth carrying forward: the same checkpoint scores 0.780 on the probe when the grader's own 10-shot block is prepended (analysis/probe_exp03_fs10.json) versus 0.736 zero-shot, so the few-shot prefix the harness always sends helps this model by ~4 points rather than hurting it."
+  watch_set_result: {fixed: 17, still_failing: 51, regressions: 15, path: /home/ben/task/analysis/exp03_watch_rerun.json}
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: contradicted
+  summary: "n=200 0.685 -> 0.690 (+0.5) and probe-250 0.728 -> 0.736 (+0.8): both far below the predicted +2 to +6 and inside the noise of either protocol. The watch set says why the mechanism did not deliver - 17 of 68 items fixed but 15 previously-correct items broken, a near wash, so the update moved probability around rather than concentrating it on correct chains."
+  decision: iterate
+  next_step: "Rejection sampling on top of an already-converged SFT model is not the lever; loss fell 0.31 -> 0.22 for no measurable accuracy. exp-04: train once from the base snapshot on the union of the teacher corpus and the rejection-sampled set (the recipe RFT was published as), with more of the OpenMathInstruct-2 GSM8K pool and a larger few-shot-prefixed share, then pick between exp-02, exp-03 and exp-04 on the full 1319-item test set where the stderr is 1.3 points instead of 3.3."

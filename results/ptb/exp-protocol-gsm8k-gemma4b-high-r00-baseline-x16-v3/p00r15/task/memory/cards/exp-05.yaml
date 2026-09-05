@@ -1,0 +1,173 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T02:01:51Z'
+situation:
+  elapsed_h: 4.05
+  remaining_h: 5.95
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04
+    score:
+      metric: accuracy
+      value: 0.665
+      protocol_n: 200
+  trigger: "exp-04 multiplied the gsm8k-family training data by 5.3x (15.2k -> 80.9k distinct problems, 8.9M -> 83.2M tokens) and moved dev-200 only 0.635 -> 0.665, less than one standard error. That family of data is saturated; the next problem set has to be a different one."
+  trigger_evidence:
+    - path: /home/ben/task/eval/exp-04_greedy_dev200.json
+      locator: "accuracy 0.665, stderr 0.033"
+    - path: /home/ben/task/eval/exp-03_greedy_dev200.json
+      locator: "accuracy 0.635, stderr 0.034"
+    - path: /home/ben/task/logs/decon_orca.log
+      locator: "190,258 documents scanned, 0 contaminated"
+  alternatives_rejected:
+    - option: "On-policy rejection sampling (RFT) from exp-04 first"
+      reason: "RFT recycles the 80.9k problems exp-04 has already fit for one epoch; Orca-Math adds 190k problems it has never seen. Diversity should be worth more when the incumbent's data family has just been shown to be saturated. RFT is the next card if time allows."
+    - option: "A second epoch over the OMI2 gsm8k pool"
+      reason: "exp-04's own result says more passes over that pool is the weakest available lever."
+    - option: "Train from base on OMI2 + Orca combined"
+      reason: "143M tokens is ~4 h at the measured throughput; only 5.95 h remain and that would leave nothing for evaluation or a fallback."
+    - option: "Pure Orca-Math with no replay"
+      reason: "exp-04's format and style were learned from OMI2; a full epoch on a different corpus risks drifting off the answer format that is worth ~50 points. 25% replay rows are cheap insurance."
+  pitfalls_hit:
+    - what: "First exp-05 data build came out at 78.3M tokens (2.1 h) because Orca-Math solutions are longer than OMI2's (p50 436 vs 335 tokens); that would have left no room for a further card"
+      cost_h: 0.1
+      fix: "rebuilt at 75k Orca + 25k replay = 99,073 rows / 60.1M tokens (~1.6 h)"
+  smoke_runs:
+    - command: [python, scripts/build_orca.py]
+      outcome: "200,035 read, 190,258 kept; dropped 2,147 duplicate questions, 6,972 whose last number is not within 120 chars of the end (label would be untrustworthy), 574 with no number, 84 over length"
+    - command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/pool_orca_deconcheck.jsonl]
+      outcome: "190,258 documents scanned, 0 contaminated, 0 matches"
+    - command: [python, scripts/make_train_set.py, --pool, data/pool_exp05.jsonl, --out, data/train_exp05, --n, '200000', --fewshot-frac, '0.12', --max-per-problem, '1', --seed, '5']
+      outcome: "99,073 rows over 99,073 distinct problems, 21 dropped over max_seq_len (0.02%), 60.1M tokens, p99 2606 / max 3064"
+problem:
+  statement: "exp-04 still gets 67 of 200 dev items wrong, all with clean formatting and a clean stop. Its training data is 161,700 solutions covering only 80,906 distinct problems, all of them GSM8K-train items or GPT augmentations of GSM8K-train items, so the model has seen a narrow slice of problem structures many times rather than a wide slice once."
+  evidence:
+    - path: /home/ben/task/analysis/exp-04_failures.jsonl
+      locator: "67 failures, all stop_reason=stop"
+      observation: "no format or termination failures remain; every error is a reasoning error"
+    - path: /home/ben/task/eval/exp-04_greedy_dev200.json
+      locator: "accuracy 0.665 vs 0.635 for a model trained on 18% of the same data"
+      observation: "the returns to more of the same data family are inside the noise"
+  affected_share: 0.335
+  failure_examples:
+    - id: exp04-fail-1
+      source: /home/ben/task/analysis/exp-04_failures.jsonl
+      question: "dev-200 item scored I with a clean stop"
+      gold: "varies"
+      model_output: "well-formatted chain, wrong intermediate quantity"
+      failure: "multi-step bookkeeping error"
+    - id: exp04-fail-2
+      source: /home/ben/task/analysis/exp-04_failures.jsonl
+      question: "dev-200 item scored I with a clean stop"
+      gold: "varies"
+      model_output: "correct method, arithmetic slip"
+      failure: "arithmetic slip inside an otherwise correct chain"
+    - id: exp04-fail-3
+      source: /home/ben/task/analysis/exp-04_failures.jsonl
+      question: "4 of 200 items"
+      gold: "n/a"
+      model_output: "greedy repetition loop to the 1024-token cap"
+      failure: "degenerate repetition under greedy decoding"
+  watch_set:
+    path: /home/ben/task/analysis/exp-04_failures.jsonl
+    n: 67
+    selection: "every dev-200 item exp-04 gets wrong under the adopted greedy protocol"
+hypothesis:
+  claim: "Continuing exp-04 for one epoch on 75k Orca-Math problems plus 25k OMI2 replay rows will raise greedy dev-200 accuracy above exp-04's 0.665, because the added problems come from a different generator and a different problem distribution than everything the model has seen so far."
+  mechanism: "exp-04's errors are reasoning errors, and its data covers 80.9k problems all derived from the same 7.5k GSM8K-train seeds. Orca-Math contributes 190k independently authored grade-school word problems with GPT-4-written solutions, i.e. new problem structures and new solution phrasings rather than more paraphrases of the same seeds. The 25% replay keeps the answer format and reasoning style from drifting; the lower LR (6e-6) keeps the continuation from overwriting what exp-04 learned."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +8 points"
+  falsified_if: "greedy dev-200 accuracy is at or below 0.665, or the termination rate drops below 0.95 (which would mean the new corpus damaged the answer format)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/train_exp05.jsonl
+      source: "microsoft/orca-math-word-problems-200k (75k rows) + replay from nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e and openai/gsm8k main/train (25k rows)"
+      n_examples: 99073
+      built_by: /home/ben/task/scripts/make_train_set.py
+      build_command: [python, scripts/make_train_set.py, --pool, data/pool_exp05.jsonl, --out, data/train_exp05, --n, '200000', --fewshot-frac, '0.12', --max-per-problem, '1', --seed, '5']
+      selection: "Orca-Math has no gold-answer field, so a row is kept only when the solution's last number starts within 120 characters of the end of the text (otherwise the label is a guess); boxed/LaTeX/bold markup stripped; deduplicated on question; target rebuilt as solution + newline + 'ANSWER: n' so 'ANSWER:' appears exactly once; replay rows are one gold solution per distinct OMI2 problem; 12% of rows carry a k-shot system message built from the gsm8k TRAIN split only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "hand-written torch loop (scripts/train_sft.py) on transformers 4.57.3, flash_attention_2, gradient checkpointing"
+    peft: none
+    hyperparams:
+      lr: 6.0e-6
+      epochs: 1
+      batch_size: 5120
+      grad_accum: 8
+      max_seq_len: 3072
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bf16
+      seed: 0
+    target_format: "identical to exp-02 and exp-04; only the corpus changes"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/train_exp05, --out, /home/ben/task/ckpts/exp-05, --init, /home/ben/task/ckpts/exp-04, --epochs, '1', --lr, '6e-6', --token-budget, '5120', --accum, '8', --save-every-frac, '0.55', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env:
+      HF_HOME: /home/ben/hf_cache
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-05_train.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: 2
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.7
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}-greedy', --limit, '200', --max-tokens, '1024', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 200 (first 200 items, no shuffle); checkpoint evaluated through scripts/make_variant.py --greedy"
+    n: 200
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.665
+    path: /home/ben/task/eval/exp-04_greedy_dev200.json
+  diagnostic:
+    what: "termination rate; a drop below 0.95 means the Orca corpus damaged the answer format the replay rows were meant to protect"
+    n: 200
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.9
+  output_checkpoint: /home/ben/task/ckpts/exp-05
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05, step: 1655}
+    - {path: /home/ben/task/ckpts/exp-05-step910, step: 910}
+  training_summary:
+    final_loss: 0.2779
+    steps: 1655
+    notes: "1655 optimizer steps over 13,247 micro-batches (1 epoch x 99,073 rows, 60.1M tokens) continuing from exp-04 at lr 6e-6; loss 0.396 -> 0.278; grad-norm 2.2-3.8; 114.1 min wall"
+  measurements:
+    - {metric: accuracy, value: 0.675, n: 200, path: /home/ben/task/eval/exp-05_greedy_dev200.json, delta_vs_comparator: 0.01}
+  diagnostic_result:
+    value: 0.985
+    path: /home/ben/task/logs/2026-09-03T04-01-06+00-00_gsm8k_XkVub8U2XFL9FajWoQa5L4.json
+    notes: "termination 0.985, up from exp-04's 0.980; median completion 454 chars vs 429. The replay rows did their job - the answer format is intact."
+  watch_set_result: {fixed: 14, still_failing: 53, regressions: 12, path: /home/ben/task/analysis/exp-05_failures.jsonl}
+  failure: null
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "0.665 -> 0.675 (+1.0 point, 65 errors instead of 67) from 75k problems out of a genuinely different corpus. That is a third of one standard error, so the claim that a new problem distribution would help is neither supported nor refuted by dev-200 at n=200 - but it is now clear that no SFT corpus is going to move this model far: 8.9M -> 83.2M -> 143M cumulative training tokens bought +50.5, +3.0, +1.0 points."
+  decision: iterate
+  next_step: "Stop scaling SFT corpora. Two cheap non-SFT levers remain in the 3.9 h left: on-policy rejection sampling from this checkpoint on problems it has never seen (exp-06), and averaging the exp-04/exp-05 weights, which are two points on one training trajectory (exp-07). Keep exp-05 as incumbent - 14 of exp-04's 67 failures are fixed and the format is intact."

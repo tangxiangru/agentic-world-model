@@ -1,0 +1,220 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T15:01:02Z'
+situation:
+  elapsed_h: 4.1
+  remaining_h: 5.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.58, protocol_n: 200}
+  trigger: "After exp-02 the format problem is gone (3 of 84 failures) and 81 of 84
+    dev-200 failures are wrong numbers produced by a well-formed chain of thought
+    (analysis/exp-02_failure_tags.json)."
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-02_failure_tags.json
+    locator: "tag=wrong_number (81 rows), tag=format_no_answer_line (3 rows)"
+  - path: /home/ben/task/data/rft_exp02.jsonl.stats.json
+    locator: "probe: 191/300 problems solved by at least one of k=4 at temperature 1.0"
+  alternatives_rejected:
+  - option: "Another epoch of the same OpenMathInstruct-2 corpus"
+    reason: "exp-02's loss was already 0.30 at the end of epoch 1; a second pass over
+      the same Llama-405B-written solutions adds no signal about which of them this
+      model can actually reproduce."
+  - option: "GRPO / online RL"
+    reason: "highest ceiling, but with 5.9 h left an unproven trainer risks the whole
+      remaining budget; RFT gets most of the same on-policy benefit from machinery
+      that is already working."
+  - option: "DPO on correct-vs-incorrect sample pairs"
+    reason: "the sampling run gives both, so this stays available, but SFT on correct
+      samples is the cheaper first cut and does not need a reference model in memory."
+  pitfalls_hit:
+  - what: "First sampling run reported 0.8% correct (515/16000 problems). Cause:
+      templates/gemma3.jinja already emits <bos>, and passing the rendered string to
+      llm.generate() makes vllm tokenize it with add_special_tokens=True, so every
+      prompt began [2, 2, 105, ...]. A doubled bos collapses gemma."
+    cost_h: 1.0
+    fix: "render to text, tokenize with add_special_tokens=False, pass
+      {'prompt_token_ids': ids}, and assert the first two ids are not both bos.
+      Solve rate went 3.2% -> 63.7% on the same checkpoint."
+  - what: "vllm 0.11 dies with 'size of tensor a (896) must match tensor b (980)' in
+      gpu_model_runner._to_list when max_num_seqs > max_model_len"
+    cost_h: 0.1
+    fix: "max_model_len 1024, max_num_seqs 768"
+  - what: "A killed vllm process keeps its 64 GB allocation, so the next engine
+      refuses to start ('Free memory 16.33/79.19 GiB')"
+    cost_h: 0.15
+    fix: "kill by pid from nvidia-smi --query-compute-apps and wait before relaunch;
+      never `pkill -f <script>` from a shell whose own command line contains that
+      pattern - it kills the launcher too"
+  - what: "Second sampling run kept only 4.8% of problems although its probe said
+      66.8%. Cause: vllm's offline LLM class did not apply
+      generation_config.eos_token_id, so samples ran past the answer repeating
+      'ANSWER: n' until max_tokens; the end-anchored regex then rejected them. The
+      grader's vllm *server* does stop correctly, which is why exp-02 evaluated fine."
+    cost_h: 0.8
+    fix: "pass stop_token_ids=[<end_of_turn>, eos] in SamplingParams, and cut every
+      completion at the end of its first well-formed answer line before filtering.
+      Also dump raw generations to disk first: re-filtering offline is seconds,
+      re-generating is 45 minutes. Recovered 26949 correct samples from the
+      already-generated dump without any further GPU time."
+  - what: "SamplingParams(seed=...) per request costs roughly 20% throughput"
+    cost_h: 0.05
+    fix: "seed the LLM once instead"
+  smoke_runs:
+  - command: [python, scripts/rft_sample.py, --probe, '300', --min-probe-rate, '0.35']
+    outcome: "PROBE: 191/300 (63.7%), later 267/400 (66.8%) - a built-in early read
+      that aborts the run rather than spending an hour producing a corpus from a
+      broken prompt. It caught the doubled bos; it did not catch the missing stop
+      token, because the probe measures whether the answer is reachable, not
+      whether the sample is usable as a target."
+  - command: [python, scripts/train_sft.py, --dry-run, --data, data/rft_mix_v1.jsonl]
+    outcome: "37294/37294 rows end in <end_of_turn> under loss, 21.0M tokens, 0
+      truncated at max_seq_len 2048"
+problem:
+  statement: "exp-02 writes a well-formed chain of thought and then gets the number
+    wrong on 81 of 200 dev items. The training targets are Llama-405B solutions:
+    correct, but not in this model's own distribution, and nothing in the corpus
+    tells it which of its own reasoning paths actually lead to the right answer."
+  evidence:
+  - path: /home/ben/task/analysis/exp-02_failure_tags.json
+    locator: "tag counts"
+    observation: "116 correct, 81 wrong_number, 3 format_no_answer_line, 0 truncated"
+  - path: /home/ben/task/analysis/exp-02_failure_tags.json
+    locator: "id=gsm8k_0deb5903"
+    observation: "'7 + 21 + 12 = 38 + 12 = 50' - a stated intermediate sum that is
+      simply wrong (should be 28 + 12 = 40)"
+  affected_share: 0.964
+  failure_examples:
+  - id: gsm8k_0deb5903
+    source: /home/ben/task/analysis/exp-02_failure_tags.json
+    question: "Patchy/Trixie kitten counts"
+    gold: '40'
+    model_output: "Patchy has had 7 x 3 = 21 kittens... Altogether 7 + 21 + 12 = 38 +
+      12 = 50"
+    failure: "arithmetic slip inside an otherwise sound plan"
+  - id: gsm8k_0f53259b
+    source: /home/ben/task/analysis/exp-02_failure_tags.json
+    question: "Beatrice/Marcell rolls"
+    gold: '45'
+    model_output: "24 + 14 = 38 ... each had eaten 38 / 2 = 19"
+    failure: "misread the question: divides a total that should not be divided"
+  - id: gsm8k_01a47d5c
+    source: /home/ben/task/analysis/exp-02_failure_tags.json
+    question: "bee hive: twice as many workers as babies, twice as many babies as queens"
+    gold: '400'
+    model_output: "sets up 3x + 2y = 700, then contradicts itself with 3x = 2y, gets
+      x = 116.67 and rounds"
+    failure: "wrong equations; accepts a non-integer intermediate and rounds it"
+  - id: gsm8k_0e2125c7
+    source: /home/ben/task/analysis/exp-02_failure_tags.json
+    question: "hospital doctor pay"
+    gold: '10000'
+    model_output: "multiplies minutes by 60 twice, ends at 1,907,600,000"
+    failure: "unit confusion compounded over eight steps"
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 84
+    selection: "all 84 dev-200 items exp-02 gets wrong"
+hypothesis:
+  claim: "Continuing exp-02 on its own rejection-sampled correct solutions (plus a
+    replay slice of the reference corpus) will raise dev-200 accuracy above exp-02's
+    0.58."
+  mechanism: "Rejection sampling keeps only paths this model actually produces AND
+    that reach the gold answer, so it upweights its own reliable reasoning patterns
+    and downweights the slip-prone ones; the reference corpus can only teach paths
+    from a different model. The replay slice is drawn preferentially from problems
+    RFT could not solve, so the run does not forget the hard tail."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points on dev-200"
+  falsified_if: "dev-200 accuracy at or below exp-02's 0.58, or fewer than 8 of the
+    84 watch-set items fixed"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/rft_mix_v1.jsonl
+    source: "derived:exp-02 (synthetic:self, rejection sampled) + openai/gsm8k train
+      and nvidia/OpenMathInstruct-2 replay"
+    n_examples: 37294
+    built_by: /home/ben/task/scripts/build_rft_mix.py
+    build_command: [python, scripts/build_rft_mix.py, --rft, data/rft_exp02.jsonl,
+      --sft, data/sft_v2.jsonl, --out, data/rft_mix_v1.jsonl, --replay, '20000']
+    selection: "k=4 samples per problem at temperature 1.0 / top_p 0.95 from
+      exp-02/final over 11000 problems; keep completions whose first well-formed
+      'ANSWER: n' line equals the gold answer; dedup, keep the 2 shortest per
+      problem (26949 of 44000 samples correct, 9419/11000 problems solved). Replay is 20000 rows
+      of sft_v2, preferring problems RFT failed to solve. Completions are cut at
+      the end of their first well-formed 'ANSWER: n' line before filtering."
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer, custom completion-only loss
+    peft: none
+    hyperparams: {lr: 6.0e-06, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 2048,
+      scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: grader's prompt via templates/gemma3.jinja,
+      target is body + blank line + 'ANSWER: <int>' + <end_of_turn>, loss on target
+      only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/rft_mix_v1.jsonl, --model, /home/ben/task/ckpts/exp-02/final,
+      --out, /home/ben/task/ckpts/exp-03, --max-seq-len, '2048', --bs, '8', --accum,
+      '4', --lr, '6e-6', --epochs, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections,
+      '32', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file,
+      '{out}.json']
+    dev_set: official gsm8k test, first 200 items (--limit 200)
+    n: 200
+    seed: 42
+  comparator: {ref: exp-02, value: 0.58, path: /home/ben/task/eval/exp-02_dev200.json}
+  diagnostic:
+    what: "watch-set: how many of exp-02's 84 dev-200 failures become correct, and
+      how many previously-correct items regress"
+    n: 200
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.70
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-03/final, step: 1166}
+  training_summary: {final_loss: 0.273, steps: 1166, notes: "train_runtime 2526 s, 14.8 samples/s, 21.0M tokens, 0 truncated"}
+  measurements:
+  - {metric: accuracy, value: 0.57, n: 200, path: /home/ben/task/eval/exp-03_dev200.json, delta_vs_comparator: -0.01}
+  diagnostic_result:
+    value: 0.012
+    path: /home/ben/task/analysis/exp-03_failure_tags.json
+    notes: "format failures stayed gone (1 of 86). Median completion length fell 403 -> 382 chars, consistent with having selected the two SHORTEST correct samples per problem."
+  watch_set_result: {fixed: 30, still_failing: 54, regressions: 32, path: /home/ben/task/analysis/exp-03_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: |
+    dev-200 0.580 -> 0.570 (-1.0, well inside the 3.5-point stderr): RFT moved the model sideways,
+    not up. It fixed 30 of exp-02's 84 failures but broke 32 items exp-02 got right, so the churn is
+    large and the net is zero - the training signal reshuffled which problems are solved rather than
+    adding capability.
+  decision: reject
+  next_step: "Keep exp-02 as the incumbent. Two candidate causes for the null: (a) the corpus kept the two SHORTEST correct samples per problem, which shortened chains of thought (median 403 -> 382 chars) and a shorter chain is a worse chain for a 4B model; (b) continuing an already-converged checkpoint on 37k rows at lr 6e-6 is too small a perturbation. exp-04 tests both by resampling the RFT rows without the length bias and training the union from the base checkpoint on a fresh schedule."

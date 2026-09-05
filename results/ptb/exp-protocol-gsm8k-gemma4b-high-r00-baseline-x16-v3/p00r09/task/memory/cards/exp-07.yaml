@@ -1,0 +1,104 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-02T22:00:00Z'
+situation:
+  elapsed_h: 7.35
+  remaining_h: 2.65
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-06/final
+    score: {metric: accuracy, value: 0.6406, protocol_n: 1319}
+  trigger: "The epoch axis is the only one that has produced a real gain: epoch 1 on the union scored 0.6202, epoch 2 scored 0.6406 (+2.0 points on the full test set), with format compliance unchanged at 0.993 and no sign of overfitting in the loss (0.293 -> 0.264)."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06_full1319.json, locator: "accuracy=0.6406, stderr=0.0132"}
+    - {path: /home/ben/task/eval/exp-04_full1319.json, locator: "accuracy=0.6202, stderr=0.0134"}
+    - {path: /home/ben/task/analysis/exp-06_full_format.json, locator: "format_rate=0.9932", observation_note: "no stopping regression after epoch 2"}
+  alternatives_rejected:
+    - {option: "A full third epoch over all 116k rows", reason: "1.52h of a 2.65h budget; it would land with under 45 min for evaluation, staging and closing, and any slowdown would force killing the run. A 75k subsample buys ~65% of the same gradient steps in ~1.0h"}
+    - {option: "Model soup of exp-04/final and exp-06/final", reason: "cheap (~25 min) but the two are consecutive points on one annealed-to-zero trajectory, so their average is close to the endpoint already; expected gain is smaller than another pass over the data"}
+    - {option: "Stop here and spend the remaining time on a larger eval", reason: "the full 1319-item test set is already the whole benchmark - there is no larger eval to buy, and exp-06 is already staged as final_model, so the remaining hour is free to spend on one more training pass"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "exp-06 leaves 474 of 1319 test items wrong, all of them well-formed answers with the wrong number. The 1 -> 2 epoch step gave +2.0 points and the loss curve shows no overfitting, so it is unknown whether the mixture is exhausted or a third pass would keep converting into accuracy. With 2.65h left this is the last question that can be answered."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_full_format.json, locator: "n_wrong=474, format_rate=0.9932", observation: "all remaining error is in the reasoning term"}
+    - {path: /home/ben/task/logs/exp-06_train.log, locator: "final line", observation: "train_loss 0.2644 after epoch 2, down from 0.2930 after epoch 1 - still descending, no divergence"}
+  affected_share: null
+  failure_examples:
+    - {id: full1319-wrong-0, source: /home/ben/task/analysis/exp-06_full_format.json, question: "test item wrong under exp-06 (see wrong[0])", gold: "see analysis file", model_output: "see analysis file", failure: "wrong number inside a well-formed answer"}
+    - {id: full1319-wrong-1, source: /home/ben/task/analysis/exp-06_full_format.json, question: "test item wrong under exp-06 (see wrong[1])", gold: "see analysis file", model_output: "see analysis file", failure: "wrong number inside a well-formed answer"}
+    - {id: full1319-wrong-2, source: /home/ben/task/analysis/exp-06_full_format.json, question: "test item wrong under exp-06 (see wrong[2])", gold: "see analysis file", model_output: "see analysis file", failure: "wrong number inside a well-formed answer"}
+  watch_set: null
+hypothesis:
+  claim: "A third pass from exp-06/final over a random 75,000-row subsample of the same union at lr 3e-6 will raise full-test accuracy above exp-06's 0.6406."
+  mechanism: "The 1 -> 2 epoch delta of +2.0 points with a still-falling loss says the model had not yet extracted what the mixture holds. A third pass at a further-halved learning rate continues that extraction while limiting the memorisation that ends the useful part of the curve; the subsample keeps the pass inside the time budget while covering 64% of the rows."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "+0.5 to +2 points on the full 1319-item test set"}
+  falsified_if: "Full-test accuracy is at or below exp-06's 0.6406 - the third pass has hit the overfitting part of the curve - in which case exp-06/final, already staged, remains final_model."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06/final
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_rft_75k.jsonl
+      source: "derived:exp-04 (random 75,000-row subsample, seed 7, of data/sft_rft_exp04.jsonl: hf:openai/gsm8k train + hf:nvidia/OpenMathInstruct-2 train_1M gsm8k rows + 50,178 rejection-sampled rows from ckpts/exp-02/final)"
+      n_examples: 75000
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, -c, "random.Random(7).shuffle(lines of data/sft_rft_exp04.jsonl); keep first 75000"]
+      selection: "no filter change; a uniform random 64% subsample of the exp-04/exp-06 union so a third pass fits the remaining wall clock. The GSM8K test split is never read."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, completion-only loss mask (same script as exp-02/03/04/06)"
+    peft: "none (full fine-tune of the 3.88B language tower; SigLIP vision tower and multimodal projector frozen)"
+    hyperparams: {lr: 3.0e-6, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 1280, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 2}
+    target_format: "identical to exp-02/03/04/06: prompt rendered by templates/gemma3.jinja with add_generation_prompt=True; target = reasoning + a final 'ANSWER: <int>' line + '<end_of_turn>'; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [python, scripts/train_sft.py, --model, ckpts/exp-06/final, --data, data/sft_rft_75k.jsonl, --out, ckpts/exp-07, --lr, "3e-6", --epochs, "1", --bs, "8", --accum, "4", --max-seq-len, "1280", --warmup, "0.02", --seed, "2"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-07_train.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.05}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "1319", --max-connections, "32", --max-tokens, "1024", --gpu-memory-utilization, "0.6"]
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.6406
+    path: /home/ben/task/eval/exp-06_full1319.json
+  diagnostic:
+    what: "format-compliance rate and wrong-answer count from scripts/format_diag.py on the full-test log"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.95
+  output_checkpoint: /home/ben/task/ckpts/exp-07/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 2341}
+  training_summary: {final_loss: 0.258, steps: 2341, notes: "74,883 of 75,000 rows kept; 21.8 samples/s; train_loss 0.2644 (after epoch 2) -> 0.2581. The loss barely moved, which is itself the answer."}
+  measurements:
+    - {metric: accuracy, value: 0.6368, n: 1319, path: /home/ben/task/eval/exp-07_full1319.json, delta_vs_comparator: -0.0038}
+  diagnostic_result: {value: 0.997, path: /home/ben/task/analysis/exp-07_full_format.json, notes: "1315/1319 well-formed, only 4 run-ons - the best format rate of the batch - but 479 wrong answers vs exp-06's 474. Nothing degraded; nothing improved."}
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "A third pass over 64% of the union at lr 3e-6 scored 0.6368 against exp-06's 0.6406, a -0.4 point change well inside the +/-1.3 point stderr, while train_loss moved only 0.2644 -> 0.2581. The epoch axis is exhausted: the 1->2 epoch step bought +2.0 points, the third bought nothing."
+  decision: reject
+  next_step: "Keep exp-06/final as final_model (0.6406 on the full 1319-item test set). Everything cheap on the data and epoch axes has been tried; a further gain would need a different mechanism - a second RFT round sampled from exp-06, or process-level supervision - neither of which fits the remaining budget."

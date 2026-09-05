@@ -1,0 +1,124 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T17:02:48Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 7.3
+  remaining_h: 2.7
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "exp-04 (0.7000) and exp-05 (0.7067) differ by one item out of 150, with stderr 0.037 each; the item-level diff is 10 fixed / 9 regressed. There is no basis in the n=150 protocol for choosing which one to ship, and only one of them can go in final_model."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.diagnostic_result", observation: "10 fixed / 9 regressed vs exp-04; net +1 item"}
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "whole file", observation: "0.7000 +/- 0.0375"}
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "whole file", observation: "0.7067 +/- 0.0373"}
+  alternatives_rejected:
+    - {option: "Ship exp-05 because its dev-150 number is higher", reason: "picking the larger of two numbers one standard error apart is selection on noise; with 2.7 h left there is time to measure properly"}
+    - {option: "Train a third model (another RFT round, or exp-04 + exp-05 weight averaging)", reason: "a round trip is ~1.5 h and would land with no time to evaluate it or to package and verify final_model; an unverified artefact is the one failure mode that costs everything"}
+    - {option: "Evaluate at --limit 1319 (the whole test set)", reason: "~75 min per model at the measured rate; two of those does not fit in the remaining budget alongside packaging"}
+    - {option: "Run the two evaluations sequentially", reason: "each vLLM server takes gpu_memory_utilization 0.3, so both fit on the 80 GB H100 at once; running them concurrently keeps the decision inside the budget"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "Two candidate checkpoints are within one item of each other on the n=150 protocol. Shipping the wrong one is a real cost, and the n=150 measurement cannot tell them apart: its standard error (0.037) is five times the observed gap (0.0067)."
+  evidence:
+    - {path: /home/ben/task/eval/exp-05_dev150.json, locator: "accuracy, stderr", observation: "0.7067 +/- 0.0373 against exp-04's 0.7000 +/- 0.0375"}
+    - {path: /home/ben/task/logs/2026-09-03T16-55-03+00-00_gsm8k_oVSfjVPRfMyKpeEzwiUC65.json, locator: "item-level diff vs the exp-04 log", observation: "19 items changed verdict in total, 10 one way and 9 the other - the models genuinely differ, the aggregate just cancels"}
+  affected_share: null
+  failure_examples:
+    - {id: exp-04-vs-exp-05, source: /home/ben/task/eval/exp-05_dev150.json, question: "n/a - this is a selection problem, not a model failure", gold: "n/a", model_output: "n/a", failure: "the protocol's resolution (1 item = 0.67 points) is coarser than the difference being decided"}
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Scoring exp-04 and exp-05 on the first 500 test items (3.3x the items, stderr ~0.020) separates them, or shows the difference is smaller than 2 points; the higher of the two under that protocol is what final_model should contain."
+  mechanism: "Standard error falls as 1/sqrt(n); at n=500 a real 3-point difference sits outside one standard error of the difference, while at n=150 it does not."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "unknown - the point of the card is to measure the sign, not to assert it"}
+  falsified_if: "the two 500-item accuracies are within 1 point of each other, in which case n=500 also fails to separate them and exp-05 is shipped on the tiebreak of shorter chains and 150/150 format compliance"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: "derived:exp-05 (the file exp-05 trained on; this card trains nothing)"
+      n_examples: 24990
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/data/rft_v1.jsonl, --k, "8", --temperature, "0.9"]
+      selection: "unchanged; listed only because one of the two candidates comes from it"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0; two servers concurrently at gpu_memory_utilization 0.3"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: reasoning, blank line, 'ANSWER: <number>', then the turn terminator"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-05/final, --limit, "500", --max-connections, "8", --json-output-file, /home/ben/task/eval/exp-06_exp05_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-06_exp05_eval500.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "8"]
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: null
+    path: /home/ben/task/eval/exp-06_exp04_dev500.json
+  diagnostic:
+    what: "the same two checkpoints' n=150 numbers are a subset of these 500 items; check the n=500 ranking is not driven by the 150 already seen"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.95
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 3582}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 1562}
+    - {path: /home/ben/task/final_model, step: 1562}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two evaluations at n=500 plus one verification eval of the packaged artefact"}
+  measurements:
+    - {metric: accuracy, value: 0.720, n: 500, path: /home/ben/task/eval/exp-06_exp05_dev500.json, delta_vs_comparator: 0.002}
+    - {metric: accuracy, value: 0.718, n: 500, path: /home/ben/task/eval/exp-06_exp04_dev500.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/final_model_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 0.002
+    path: /home/ben/task/eval/exp-06_exp05_dev500.json
+    notes: "exp-05 0.7200 +/- 0.0201 vs exp-04 0.7180 +/- 0.0201 on the first 500 test items: one item apart, so n=500 does not separate them either. The 150-item subset gave the same ordering, so the ranking is not an artefact of the extra 350 items. The packaged final_model (exp-05 weights) re-scored 0.7133 at n=150 against 0.7067 for the same weights from ckpts/, i.e. vLLM greedy decoding is reproducible to about one item."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "n=500 did not separate the candidates: 0.7200 vs 0.7180, one item apart, exactly the outcome named in falsified_if. The two training recipes are equivalent within measurement, so the choice falls to the tiebreak written before the run - exp-05, which has 150/150 format compliance, 22% shorter chains and the higher (if meaningless) number at both n=150 and n=500."
+  decision: adopt
+  next_step: "final_model contains exp-05's weights plus the greedy generation_config, verified end to end at 0.7133 on n=150 from the shipped directory. If more time existed: a second RFT round or exp-04/exp-05 weight averaging, both of which need a larger dev protocol (n>=1000) to be worth measuring."

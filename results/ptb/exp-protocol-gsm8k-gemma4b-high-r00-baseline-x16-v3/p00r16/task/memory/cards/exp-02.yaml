@@ -1,0 +1,117 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T07:55:00Z'
+situation:
+  elapsed_h: 0.6
+  remaining_h: 9.4
+  incumbent:
+    ref: base_model
+    path: /home/ben/task/base_gemma3_pt
+    score: {metric: accuracy, value: 0.04, protocol_n: 150}
+  trigger: "exp-01 is still running, but the base checkpoint is a pretrained-only model with no instruction format at all; the whole approach depends on a completion-only SFT pipeline that renders training strings byte-identically to the grader's template, and that pipeline has never been run end to end here."
+  trigger_evidence:
+    - {path: /home/ben/task/scripts/train_sft.py, locator: "SFTRows.build / preflight block", observation: "dry run: p50=274, p99=487, max=588 tokens, 0.000% truncated at max_seq_len=1024; target ends with token 106 <end_of_turn>"}
+    - {path: /home/ben/task/data/sft_gsm8k.jsonl, locator: "6973 rows", observation: "contamination check vs test_data.json: 0 contaminated documents (analysis/contam_gsm8k.txt)"}
+  alternatives_rejected:
+    - {option: "Go straight to the large 150k-row mixture", reason: "a pipeline bug would cost ~2h of GPU; the 6973-row run costs ~15 min and exercises every stage (render, mask, train, save, vLLM reload, grade)"}
+    - {option: "LoRA instead of full fine-tune", reason: "an 80GB H100 with 8-bit Adam fits a 3.9B full fine-tune; full FT is the stronger baseline and the budget allows it"}
+    - {option: "Train with the 10-shot system message in every row", reason: "+2044 prompt tokens per row is roughly 7x the cost of a zero-shot row; measure the mismatch with the fewshot/no-fewshot probe before paying for it"}
+  pitfalls_hit:
+    - {what: "MetaMathQA solutions embed gsm8k's own '#### N' line, a second answer marker the grader also reads (pitfalls.yaml double_answer_format); 112111 of 112239 rows affected", cost_h: 0.1, fix: "finalize() strips ^#+ numeric lines; a post-filter drops any row without exactly one 'ANSWER: <gold>' at the very end"}
+    - {what: "the official eval is slow at the harness default --max-connections 2 (~55 min for 150 base-model samples)", cost_h: 0.3, fix: "raise --max-connections for later runs; it changes throughput only, not the per-request sampling distribution"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --model, base_gemma3_pt, --data, data/sft_gsm8k.jsonl, --out, /tmp/x, --max-seq-len, '1024', --dry-run], outcome: "preflight ok: 0% truncation, every sampled target ends with <end_of_turn>, prompt ends with '<start_of_turn>model\\n' and carries exactly one <bos>"}
+problem:
+  statement: "google/gemma-3-4b-pt has never been trained to answer in the harness's turn format: it does not stop at <end_of_turn> and does not reliably emit a final 'ANSWER: <number>' line, so the scorer (last numeric token of the completion) reads whatever the model happens to trail off with."
+  evidence:
+    - {path: /home/ben/task/base_gemma3_pt/generation_config.json, locator: "eos_token_id [1, 106]", observation: "the grader stops on <end_of_turn> (106); a pretrained-only checkpoint has no training signal to emit it"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "whole file", observation: "the grading template ends every model turn with <end_of_turn>, so that token and no other is the terminator training must teach"}
+    - {path: /home/ben/task/analysis/exp-01_format.json, locator: "clean_answer_line=0.193, nonstop=77", observation: "exp-01: only 29/150 base completions end with a clean 'ANSWER: <number>'; 77/150 hit max_tokens without emitting <end_of_turn>; accuracy 0.040"}
+  affected_share: 0.81
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "first 300 of the last 500 GSM8K *train* items (indices 6973-7272), held out from every training file. Not the benchmark test set."
+hypothesis:
+  claim: "Completion-only SFT of the base checkpoint on the 6973 in-distribution GSM8K train items, rendered with the grader's own template and terminated with <end_of_turn>, raises accuracy on the official --limit 150 protocol above the base model's exp-01 score."
+  mechanism: "The model already has the arithmetic and language competence; what it lacks is the turn format. Supervising the exact prompt -> solution -> stop-token string teaches termination and the 'ANSWER: N' final line, which converts reasoning the model can already do into completions the scorer can read."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "large; +20 pts or more if the base model's failures are mostly format"
+  falsified_if: "accuracy on the official --limit 150 protocol is not above exp-01's base score, or fewer than 90% of the 300 probe completions end with a clean 'ANSWER: <number>' and finish_reason=stop"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/base_gemma3_pt
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_gsm8k.jsonl
+      source: "openai/gsm8k (config main, split train, indices 0-6972; last 500 held out as the private probe pool)"
+      n_examples: 6973
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/sft_gsm8k.jsonl, --gsm8k, '1']
+      selection: "original gsm8k chain of thought incl. <<a*b=c>> calculator annotations (the eval's own 10-shot demos carry them); '#### N' replaced by a final 'ANSWER: N' line; rows must contain exactly one answer marker and end with it"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, completion-only loss (prompt masked with -100)"
+    peft: "none (full fine-tune of the 3.9B language model; vision_tower and multi_modal_projector frozen and saved unchanged)"
+    hyperparams: {lr: 1.0e-05, epochs: 3, batch_size: 8, grad_accum: 4, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "prompt = templates/gemma3.jinja render of [user: MATH_PROMPT_TEMPLATE(question)] with add_generation_prompt; target = chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, base_gemma3_pt, --data, data/sft_gsm8k.jsonl, --out, /home/ben/task/ckpts/exp-02, --lr, '1e-5', --epochs, '3', --bs, '8', --grad-accum, '4', --max-seq-len, '1024']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.5
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.04
+    path: /home/ben/task/eval/exp-01_dev150.json
+  diagnostic:
+    what: "probe300 (held-out GSM8K train tail) accuracy and the share of completions that stop cleanly after 'ANSWER: <number>'"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.31
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 654}
+  training_summary: {final_loss: 0.3546, steps: 654, notes: "1104s wall, 18.9 samples/s, 1.69 s per optimizer step at per-device batch 8 x grad_accum 4"}
+  measurements:
+    - {metric: accuracy, value: 0.4667, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.4267}
+  diagnostic_result:
+    value: 0.44
+    path: /home/ben/task/eval/exp-02_probe300.json
+    notes: "probe300 greedy accuracy 0.440 (132/300). Format is solved: 297/300 probe completions end with a clean 'ANSWER: <number>', 298/300 finish on <end_of_turn>, median completion 104 tokens (base: 5832 chars, 51% unterminated). On the official 150 the same holds: 147/150 clean answer lines, 0 unterminated (analysis/exp-02_format.json)."
+  watch_set_result: {fixed: null, still_failing: 168, regressions: null, path: /home/ben/task/eval/exp-02_probe300.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "6973 gsm8k train rows in the grader's format take the model from 0.040 to 0.4667 on the official --limit 150 protocol (+42.7 pts). The mechanism is confirmed directly: unterminated completions went 77/150 -> 0/150 and clean 'ANSWER: N' lines 29/150 -> 147/150, so the base model's failure really was format, and the arithmetic was already there."
+  decision: adopt
+  next_step: "exp-03: the format ceiling is reached, so scale supervision for reasoning - 213885 rows of gsm8k train x3 + OpenMathInstruct-2 gsm8k/augmented_gsm8k + MetaMathQA GSM rewrites, two epochs from base."

@@ -1,0 +1,1 @@
+Default launch failed with EROFS creating ~/.claude/jobs/3b2589a4. Escalated retry and one permitted retry both rejected because automatic permission approval did not finish before deadline. No Claude session was created or claimed started; no duplicate task dispatched. Independent Codex raw trace review continues.

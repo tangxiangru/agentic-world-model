@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-03T09:51:58Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.2
+  remaining_h: 9.8
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Batch start: no measured score exists for the starting checkpoint under evaluate.py, so no later card can have a valid comparator."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty table"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and compare against published gemma-3-4b-pt GSM8K numbers", reason: "published numbers use a different prompt/scorer; rule 2 requires a comparator measured under this protocol"}
+    - {option: "Run the baseline at --limit 500 for a tighter CI", reason: "the pt checkpoint has no stop-token discipline so generations run long; 150 is the protocol default and keeps this under ~30 min"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, -c, "load_dataset('openai/gsm8k','main')"], outcome: "train 7473 / test 1319 rows downloaded fine (logs/data_download.log)"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a pretrained (non-instruct) checkpoint. Under the harness prompt (10-shot system message + 'ANSWER: $ANSWER' instruction, scorer = last number in the completion) it is unknown how often it emits a parseable final answer at all, and unknown what its GSM8K accuracy is."
+  evidence:
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "L20-40 MATH_PROMPT_TEMPLATE; L70 scorer=match(numeric=True)", observation: "grader reads the LAST whitespace-delimited number of the completion; a rambling continuation scores 0 even when the reasoning was right"}
+    - {path: /home/ben/task/templates/gemma3.jinja, locator: "whole file", observation: "grading template terminates assistant turns with <end_of_turn>; a pt checkpoint has no reason to emit it"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Evaluating the untuned snapshot under evaluate.py --limit 150 yields a measurable accuracy that is limited mainly by format/stop behaviour rather than by arithmetic, so the last-number-in-completion score will fall clearly below its few-shot reasoning ability."
+  mechanism: "A pretrained LM continues past the answer instead of stopping; the scorer reads the last number in the whole completion, so overrun destroys otherwise-correct answers."
+  expected_effect: {metric: accuracy, direction: lower, against: base_model, magnitude: "no prediction; this run defines the reference point"}
+  falsified_if: "the run produces no score (crash/OOM), or accuracy is null"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: openai/gsm8k
+      source: openai/gsm8k
+      n_examples: 150
+      built_by: null
+      build_command: []
+      selection: "no training data: this card only evaluates. The listed set is the harness's own eval input (gsm8k test split, first 150 items as taken by evaluate.py --limit 150). It is never used for training."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect_ai 0.1.dev3780 + vllm 0.11.0"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "n/a - nothing is trained in this card"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, "150", --max-connections, "16", --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01_baseline.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.5}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of completions whose last line matches 'ANSWER: <number>' (format compliance), read from the inspect log"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no training in this card"}
+  measurements:
+    - {metric: accuracy, value: 0.0667, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.247
+    path: /home/ben/task/logs/2026-09-03T09-56-46+00-00_gsm8k_7M4nmJQDGZNKvsjw4J9X9T.json
+    notes: "37/150 completions end with an 'ANSWER: n' line. 140/150 contain 'ANSWER:' somewhere, i.e. the model usually answers and then keeps going: it invents further word problems. 62/150 hit max_tokens (4000); median completion is 4.6k chars. stderr 0.0204."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base gemma-3-4b-pt scores 0.067 +/- 0.020 on dev-150. The failure is overwhelmingly formatting, not reasoning: 140/150 completions do emit an 'ANSWER:' line (sample 0 answers 20 correctly) but only 37 stop there; the rest continue with fresh invented problems, so the grader's last-number rule reads a number from a different problem."
+  decision: iterate
+  next_step: "SFT on gsm8k-style CoT whose target ends 'ANSWER: n<end_of_turn>' so vLLM stops (106 is in the base generation_config eos list). Comparator for all later cards: 0.067 @ n=150."

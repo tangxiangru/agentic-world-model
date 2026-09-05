@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-04T02:42:22Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 8.35
+  remaining_h: 1.65
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.722, protocol_n: 500}
+  trigger: "exp-07 showed every measurement in this batch was taken under temperature-1.0 sampling. The three-way pick between exp-04, exp-05 and the exp-06 soup was made on those numbers - 0.644 / 0.656 / 0.664 at n=500, all mutually insignificant (McNemar p 0.43 to 0.79). Under greedy decoding the ordering could differ, and the soup's 2-pt lead was never real evidence."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/greedy_mcnemar.json, locator: "sampled 0.664 -> greedy 0.722, p=0.0076 on identical weights"}
+    - {path: /home/ben/task/analysis/soup_mcnemar.json, locator: "the three sampled n=500 scores the soup was chosen on"}
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "diagnostic_result - soup vs exp-04 p=0.43, soup vs exp-05 p=0.79"}
+  alternatives_rejected:
+    - {option: "Keep the soup and stop", reason: "it is the safe default and stays installed unless a rival beats it, but with ~1.65 h left two n=500 greedy evals cost ~30 min and the sampled selection they would replace was demonstrably noise-driven"}
+    - {option: "Re-select at n=150 to save time", reason: "n=150 is exactly the resolution that produced the contradictory orderings in exp-04/exp-05; re-running the same underpowered comparison would answer nothing"}
+    - {option: "Also re-check exp-02 and exp-03 under greedy", reason: "they trail by 4-7 pts even before the decode fix, far outside anything greedy decoding closes, and there is no budget for four evals"}
+    - {option: "Sweep the soup weight now that decoding is fixed", reason: "each point on the sweep is another 15-min eval; identifying the best ENDPOINT is the higher-value use of the remaining time"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, "-c", "set greedy decode on both rival checkpoints"], outcome: "ckpts/exp-04/final and ckpts/exp-05/final generation_config.json set to do_sample=false, temperature=0.0, top_k/top_p removed, eos [1,106] - so all three candidates are compared under identical decode settings"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The checkpoint installed as final_model was chosen from three candidates whose measured differences were entirely within sampling noise, using a decode configuration now known to be wrong. The choice was never grounded, and greedy decoding may reorder them."
+  evidence:
+    - {path: /home/ben/task/eval/final_model_dev500.json, locator: "exp-04 sampled 0.644"}
+    - {path: /home/ben/task/eval/exp05_dev500.json, locator: "exp-05 sampled 0.656"}
+    - {path: /home/ben/task/eval/exp06_soup_dev500.json, locator: "soup sampled 0.664; McNemar vs both endpoints p=0.43 and p=0.79"}
+  affected_share: 1.0
+  failure_examples:
+    - {id: "sel-1", source: /home/ben/task/analysis/soup_mcnemar.json, question: "(soup vs exp-04 at n=500)", gold: "n/a", model_output: "70 soup-only, 60 exp-04-only, p=0.43", failure: "the 2.0-pt gap the soup was picked on is one standard error of the difference"}
+    - {id: "sel-2", source: /home/ben/task/analysis/soup_mcnemar.json, question: "(soup vs exp-05 at n=500)", gold: "n/a", model_output: "64 soup-only, 60 exp-05-only, p=0.79", failure: "a coin flip"}
+    - {id: "sel-3", source: /home/ben/task/memory/cards/exp-05.yaml, question: "(exp-04 vs exp-05 at n=150 and n=500)", gold: "n/a", model_output: "n=150 says exp-04 by 2.7, n=500 says exp-05 by 1.2", failure: "the orderings contradict, which is what sampling noise looks like"}
+  watch_set:
+    path: /home/ben/task/analysis/exp04_tags_watch.jsonl
+    n: 49
+    selection: "standing dev-150 watch set from exp-04 (no weights change in this card)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Under greedy decoding at n=500, the three candidates - exp-04/final, exp-05/final and the exp-06 soup (0.722, already measured) - do not all score the same, and the best of them is the one that should ship."
+  mechanism: "Greedy decoding removes the sampler variance that made the earlier comparison uninformative, so what is left is the genuine difference between the weights. Averaging two checkpoints from one trajectory usually lands at least as high as either endpoint, so the soup is the favourite - but that is a prior, and exp-06's own diagnostic already showed the soup is not a strict improvement (it loses 32 items both endpoints get right)."
+  falsified_if: "both endpoints score within 1 pt of the soup's 0.722 at n=500, in which case the three are indistinguishable under greedy decoding too and the choice among them remains unresolved."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-06, magnitude: "0 to +3 pts for the best endpoint over the soup, or the soup holds"}
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06-soup
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/exp07_generation_config_before.json
+      source: "local - no corpus is read by this card; it runs two evaluations of existing checkpoints"
+      n_examples: 1
+      built_by: /home/ben/task/scripts/set_decode.py
+      build_command: [python, scripts/set_decode.py, --dir, final_model, --temperature, "0.0"]
+      selection: "not a corpus; an immutable file so the lock has something stable to pin"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "inspect_ai + vllm 0.11.0, greedy"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged - no weights change in this card"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-04/final, --limit, "500", --max-connections, "16", --json-output-file, /home/ben/task/eval/exp04_greedy_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/eval_exp04_greedy500.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16"]
+    dev_set: "official inspect_evals/gsm8k test stream, --limit 500 (first 500 items in dataset order)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-06
+    value: 0.722
+    path: /home/ben/task/eval/final_greedy_dev500.json
+  diagnostic:
+    what: "pairwise McNemar among the three greedy runs on the same 500 items"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.42
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1258}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 1368}
+    - {path: /home/ben/task/ckpts/exp-06-soup, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; two n=500 greedy evaluations of existing checkpoints"}
+  measurements:
+    - {metric: accuracy, value: 0.736, n: 500, path: /home/ben/task/eval/exp04_greedy_dev500.json, delta_vs_comparator: 0.014}
+    - {metric: accuracy, value: 0.708, n: 500, path: /home/ben/task/eval/exp05_greedy_dev500.json, delta_vs_comparator: -0.014}
+    - {metric: accuracy, value: 0.728, n: 500, path: /home/ben/task/eval/FINAL_dev500.json, delta_vs_comparator: 0.006}
+  diagnostic_result:
+    value: 0.736
+    path: /home/ben/task/analysis/greedy_selection.json
+    notes: "Greedy n=500: exp-04 0.736, soup 0.722, exp-05 0.708. Pairwise McNemar - exp-04 vs soup 27/20 discordant p=0.382; exp-04 vs exp-05 39/25 p=0.103; soup vs exp-05 27/20 p=0.382. No pair is individually significant, but the ordering is now internally COHERENT in a way the sampled one never was: the soup sits exactly between the two endpoints it averages, which is what an interpolation should do, and the discordant counts collapsed from 111-130 items under sampling to 47-64 under greedy - most of the earlier disagreement was the sampler, not the weights. Re-running the winner through the installed final_model directory gave 0.728 rather than 0.736 on the same items; greedy vLLM is only deterministic up to batch-composition effects, so ~1 pt of run-to-run wobble survives."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Under greedy decoding the three candidates separate and the ordering reverses: exp-04 0.736 > soup 0.722 > exp-05 0.708, where the sampled measurement had ranked them 0.644 < 0.656 < 0.664. The soup was picked because it was the top of three noise draws; with the noise removed it is the midpoint of its own endpoints and exp-04 is the better model. The falsification clause is not met - the endpoints are 1.4 pts either side of the soup and 2.8 pts apart from each other."
+  decision: adopt
+  next_step: "exp-04/final with greedy decode is installed at /home/ben/task/final_model and verified end-to-end: evaluate.py loads that directory and scores 0.728 at n=500, against 0.0867 for the base checkpoint. Nothing further is launched; the remaining time is under an hour and any new run would be unverifiable."

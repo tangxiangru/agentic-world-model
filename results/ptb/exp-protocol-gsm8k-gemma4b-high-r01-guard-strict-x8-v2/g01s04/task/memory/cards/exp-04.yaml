@@ -1,0 +1,143 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T15:15:00Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 5.4
+  remaining_h: 4.6
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.7333, protocol_n: 150}
+  trigger: "97 of the 400 held-out items are still wrong under greedy decoding, and sampling the incumbent 4x at T=1.0 over 8746 training-distribution problems solves only 53.5% at least twice - so the residual failures are reasoning, not format. exp-02 also consumed only 112000 of the 151540 gsm-source rows available in OpenMathInstruct-2 train_1M, leaving 39540 unseen."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev400_greedy.jsonl, locator: "97 of 400 incorrect", observation: "residual errors on the held-out set with format already at 0.985"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "solved at least once 6816/8746 (77.9%), correct completions 15084/34984 (43.1%)", observation: "the incumbent's own pass rate on training-distribution problems"}
+    - {path: /home/ben/task/data/sft_fresh.jsonl, locator: "39540 rows, 6 of which share a target with sft_pool_v2", observation: "OpenMathInstruct-2 rows exp-02 never saw"}
+  alternatives_rejected:
+    - {option: "Pure RFT: train on the self-generated correct chains alone", reason: "only 8387 rows survived the 2-of-4 filter after the sampling run lost half its questions to a crash, and self-generated data sits at the student's own 43%-correct level; alone it is both too small and weaker than the 405B-generated chains"}
+    - {option: "Pure continued SFT on the 39540 fresh rows alone", reason: "cleaner attribution, but it does nothing about the on-policy distribution mismatch that RFT exists to fix; with one training run left in the budget the mixture has the better expected score, and this trade is being made deliberately at the cost of attribution"}
+    - {option: "Re-sample the 11254 questions lost to the crash before training", reason: "about 30 min of GPU for roughly 8k more RFT rows in a mixture already dominated by 39540 fresh rows; the same 30 min buys a larger-n eval that actually decides which checkpoint ships"}
+    - {option: "DPO or GRPO on the sampled correct/incorrect pairs", reason: "the samples are there, but neither is set up and a first GRPO launch inside 4.6 remaining hours risks the whole batch for an unmeasured gain"}
+    - {option: "A second epoch over exp-02's original 142k pool", reason: "39540 unseen rows of the same quality are available; repeating seen data is strictly worse than new data at equal cost"}
+  pitfalls_hit:
+    - {what: "gen_vllm.py crashed AFTER generating all 80000 completions: a completion contained a token like '1e999', float() made it inf, and int(inf) raised OverflowError inside my last-number helper. Only 8746 of 20000 questions had been written", cost_h: 0.85, fix: "guard non-finite values in common._normalize_number; salvaged the 8746 written lines rather than re-running"}
+    - {what: "The re-run over the remaining questions ran ~6x slower (4.5 vs 26 prompts/s). The crashed run had left an orphaned VLLM::EngineCore holding 68434 MiB, so the new engine was squeezed into what was left. nvidia-smi --query-gpu=memory.used showed the memory but --query-compute-apps was needed to find the owner", cost_h: 0.3, fix: "kill the orphan by pid from --query-compute-apps; always check for a resident engine after killing a vllm job"}
+    - {what: "Symlinked checkpoint variant was created with relative symlink targets, which resolve against the LINK's directory, so evaluate.py died on a missing config.json", cost_h: 0.05, fix: "os.path.abspath the source in make_variant.py"}
+  smoke_runs:
+    - {command: [python, scripts/build_rft.py, --samples, data/rft_samples.jsonl, --out, data/rft_train.jsonl, --max-per-problem, '2', --min-correct, '2'], outcome: "8387 rows from 4679 problems; all terminated, all with exactly one ANSWER marker"}
+    - {command: [python, scripts/train_sft.py, --data, data/exp04_mix.jsonl, --out, /tmp/x, --dry-run, --max-seq-len, '2560'], outcome: "47825/47927 rows fit (0.213% dropped), p50=331 p99=2293 max=3501, 22.7M tokens / 8.2M loss tokens"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/exp04_mix_decon_input.jsonl], outcome: "47927 scanned, 0 contaminated, exit 0"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The incumbent's remaining errors are reasoning errors, not formatting ones. Format compliance is 0.985 and only 4 of 150 completions fail to terminate, yet 97 of 400 held-out items are still answered wrongly, and on training-distribution problems the model produces a correct chain in only 43.1% of samples at T=1.0."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev400_greedy.jsonl, locator: "97 incorrect of 400", observation: "greedy held-out errors with format already fixed"}
+    - {path: /home/ben/task/analysis/exp-03_format.json, locator: "format_rate 0.9733, stop_reasons {stop:146, max_tokens:4}", observation: "format is no longer the bottleneck; only 4 items fail on termination"}
+    - {path: /home/ben/task/logs/rft_sample.log, locator: "correct 15084/34984 (43.1%); solved at least twice 4679/8746 (53.5%)", observation: "the model is far from saturating problems of the training distribution"}
+  affected_share: 0.2425
+  failure_examples:
+    - {id: dev400-residual, source: /home/ben/task/analysis/exp-02_dev400_greedy.jsonl, question: "the 400 held-out gsm8k-train items", gold: "n/a", model_output: "303/400 correct", failure: "97 items wrong despite a well-formed terminated chain"}
+    - {id: rft-unsolved, source: /home/ben/task/logs/rft_sample.log, question: "8746 training-distribution problems, 4 samples each", gold: "n/a", model_output: "1930 problems never solved in 4 tries; 2137 solved exactly once", failure: "22.1% unsolvable at pass@4, another 24.4% solved only by a chain likely to be luck"}
+    - {id: greedy-loops, source: /home/ben/task/analysis/exp-03_format.json, question: "the 150 graded items", gold: "n/a", model_output: "4 completions hit the 4000-token cap", failure: "greedy repetition loops, worth 2.7 points"}
+  watch_set:
+    path: /home/ben/task/data/dev_train.jsonl
+    n: 400
+    selection: "the same 400 gsm8k-TRAIN held-out items as exp-02 and exp-03. Never trained on: OpenMathInstruct-2 rows sharing 3+ 8-grams with any held-out question were dropped from both the SFT pool and the RFT question pool (1160 rows). No test item is involved."
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Continuing training from exp-02's weights on a mixture of 39540 unseen OpenMathInstruct-2 chains and 8387 self-generated chains that the incumbent produced and that were verified correct at least twice in four samples raises GSM8K accuracy above exp-03's 0.7333 at n=150, scored under the same greedy generation_config."
+  mechanism: "Two additive effects. The unseen 405B-generated chains give the student more correct reasoning than it can produce itself, continuing the trend that took the model from 0.04 to 0.63 in one epoch. The self-generated chains are on-policy: they are in the model's own phrasing, so the gradient reinforces reasoning paths it already reaches rather than pulling it toward a teacher distribution it cannot represent. Requiring 2 correct samples out of 4 filters chains that hit the answer by luck, which a 1-of-k filter would admit."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 points"
+  falsified_if: "accuracy at n=150 under the greedy config is at or below exp-03's 0.7333, or held-out dev-400 greedy accuracy falls below exp-02's 0.7575 - either would mean the extra data is not adding reasoning and the model is at the ceiling of this data source"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/exp04_mix.jsonl
+      source: "nvidia/OpenMathInstruct-2 (train_1M, rows 112000-151540 of the same seed-0 shuffle exp-02 drew from) + synthetic:self (exp-02 samples)"
+      n_examples: 47927
+      built_by: /home/ben/task/scripts/build_rft.py
+      build_command: [python, scripts/build_rft.py, --samples, data/rft_samples.jsonl, --out, data/rft_train.jsonl, --max-per-problem, '2', --min-correct, '2']
+      selection: "39540 OpenMathInstruct-2 gsm-source rows exp-02 never saw (verified: 6 of 39540 share a target with sft_pool_v2), same cleaning as exp-02. Plus 8387 rows sampled from exp-02 at T=1.0/top_p=0.95/top_k=64, k=4, over 8746 problems from gsm8k train and augmented-gsm8k: kept only completions whose last number matches the verified gold answer, requiring 2 of 4 correct, deduped by the multiset of arithmetic expressions in the chain, shortest first, max 2 per problem. 15% of all rows carry a k-shot system prefix in the grader's sample_to_fewshot() shape."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE
+    peft: "none - full fine-tune of the 3.88B text stack; vision_tower and multi_modal_projector frozen"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 16, grad_accum: 8, max_seq_len: 2560, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {number}<end_of_turn>, rendered with templates/gemma3.jinja (sha 7de1c58e208e); loss masked to the completion"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/exp04_mix.jsonl, --parent, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/ckpts/exp-04, --max-seq-len, '2560', --lr, '1e-5', --epochs, '1', --bs, '16', --grad-accum, '8', --attn, flash_attention_2, --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7333
+    path: /home/ben/task/eval/exp-03_greedy_dev150.json
+  diagnostic:
+    what: "greedy accuracy on the 400 held-out gsm8k-train items, against exp-02's 0.7575, plus format rate and the count of completions hitting the token cap"
+    n: 400
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.77
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 374}
+    - {path: /home/ben/task/ckpts/exp-04/final_greedy, step: 374}
+  training_summary: {final_loss: 0.263, steps: 374, notes: "2783 s, 17.2 samples/s, no instability; train_sft.py now writes the processor configs itself, so the checkpoint served under vLLM with no manual fixup"}
+  measurements:
+    - {metric: accuracy, value: 0.7333, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.78
+    path: /home/ben/task/analysis/exp-04_dev400_greedy.jsonl
+    notes: "held-out dev-400 greedy 0.7575 -> 0.7800 (+2.25, 9 more items of 400). Format rate on the 150 graded items is 1.000 (exp-03: 0.9733) and stop_reasons are 150/150 'stop' (exp-03: 4 hit the 4000-token cap), so the greedy repetition loops are gone. On the 150 items exp-04 fixes 8 and breaks 8 (analysis/exp-04_vs_exp-03_items.json) - the two checkpoints differ on 16 items and net to zero."
+  watch_set_result:
+    fixed: 9
+    still_failing: 88
+    regressions: 0
+    path: /home/ben/task/analysis/exp-04_dev400_greedy.jsonl
+    notes: "net +9 of the 97 dev-400 items exp-02 was failing; measured as totals (312 vs 303 correct), not item-by-item"
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "The pre-registered criterion fired: accuracy at n=150 is 0.7333, exactly equal to exp-03 and not above it, so the claim as written is contradicted. The mechanism did work - dev-400 greedy rose 0.7575 -> 0.7800 and every one of the 150 completions now terminates (0 token-cap hits, down from 4) - but at n=150 the two checkpoints fix and break 8 items each and net to zero."
+  decision: iterate
+  next_step: "n=150 has a stderr of 0.036 and cannot resolve the ~2-point effect dev-400 shows; the two candidates are separated by 16 items in opposite directions. Score exp-03 and exp-04 against each other at a larger --limit under one protocol and ship the winner. That comparison is exp-05."

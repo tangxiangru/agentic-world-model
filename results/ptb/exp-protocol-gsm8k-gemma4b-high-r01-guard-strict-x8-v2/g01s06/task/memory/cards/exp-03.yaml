@@ -1,0 +1,351 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T14:10:00Z'
+situation:
+  elapsed_h: 4.4
+  remaining_h: 5.6
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score:
+      metric: accuracy
+      value: 0.6333
+      protocol_n: 150
+  trigger: exp-02 fixed the format completely (0/150 missing ANSWER lines, every completion stops) so
+    its 55 remaining dev-150 failures are reasoning errors, and rejection sampling on 30.7k held-out GSM8K-train-derived
+    questions shows the model already gets 91% of them right at n=4, i.e. there is a large pool of its
+    own verified-correct chains to train on.
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-02_summary.json
+    locator: no_answer_marker=0, non_stop_finish=0, mean_output_chars=413
+  - path: /home/ben/task/data/rft_pass1.stats.json
+    locator: pass_rate=0.748, solve_rate=0.911
+  - path: /home/ben/task/analysis/exp-02_failures.jsonl
+    locator: 55 rows
+  alternatives_rejected:
+  - option: A second epoch over data/train_sft.jsonl.
+    reason: Same off-policy distribution the model has already fitted to loss 0.27; RFT trains on chains
+      the model itself produced and that were verified against gold, which is the part of its own distribution
+      that is correct.
+  - option: More OpenMathInstruct-2 shards.
+    reason: Shards 4-9 yielded only 11.3k problems not already in exp-02's corpus; the gsm8k-sourced unique-problem
+      pool is nearly exhausted at ~80k.
+  - option: DPO on correct/incorrect sample pairs from the same sweep.
+    reason: The pairs exist, but a preference run plus its eval does not fit the 5.6 h left alongside
+      the RFT run; RFT is the cheaper first test of the same data.
+  - option: RFT on pass-1 samples only.
+    reason: n=4 leaves 2727 questions unsolved, exactly the hard tail the remaining failures look like;
+      a second pass at n=16 recovered 1775 of them (65%) for 12 extra minutes of sampling.
+  - option: Train on the RFT rows alone.
+    reason: 57.8k self-generated rows only would narrow the output distribution; 25k rows resampled from
+      the original corpus are mixed back in as an anchor.
+  pitfalls_hit:
+  - what: vLLM's offline LLM.generate() tokenizes a raw string prompt with add_special_tokens=True, prepending
+      a second <bos> on top of the one the chat template already emits.
+    cost_h: 0.2
+    fix: tokenize in the script with add_special_tokens=False and pass TokensPrompt.
+  - what: 'An explicit SamplingParams does not inherit generation_config''s eos list, so <end_of_turn>
+      (106) was not a stop token: every sample ran to max_tokens, writing <end_of_turn><start_of_turn>model
+      and a second solution. Measured pass rate 0.0025 while the same checkpoint scored 0.633 on the benchmark.'
+    cost_h: 0.3
+    fix: stop_token_ids=[1, 106] in SamplingParams; pass rate went 0.0025 -> 0.748.
+  - what: top_p=1.0 (set to dodge the slow PyTorch-native top-p sort over Gemma's 262k vocab) made sampling
+      incoherent and non-terminating.
+    cost_h: 0.1
+    fix: kept top_p=0.95, which is also what the checkpoint's generation_config uses at eval.
+  - what: pkill on the sampling script left its vLLM EngineCore child holding 66 GB, so the next launch
+      failed to initialise.
+    cost_h: 0.05
+    fix: kill the pid from nvidia-smi --query-compute-apps before relaunching.
+  smoke_runs:
+  - command:
+    - python
+    - scripts/rft_sample.py
+    - --model
+    - ckpts/exp-02/final
+    - --questions
+    - data/pool_probe3.jsonl
+    - --out
+    - /tmp/probe4.jsonl
+    - --n
+    - '4'
+    - --temperature
+    - '0.9'
+    - --top-p
+    - '0.95'
+    outcome: '500 questions: pass_rate 0.75, solve_rate 0.91, 46 req/s; confirmed the stop-token fix before
+      committing 45 min of sampling.'
+  - command:
+    - python
+    - ../contamination_check.py
+    - --reference
+    - ../test_data.json
+    - --input
+    - data/train_rft.jsonl
+    outcome: 82845 documents scanned, 0 contaminated.
+problem:
+  statement: 'exp-02''s remaining 55 dev-150 failures are reasoning errors, not formatting: it drops a
+    quantity named in the question, mis-reads ''a third of the elves quit'' as leaving a third, or counts
+    a 4-level structure as 5 levels. The chains are fluent and well-formed but the arithmetic plan is
+    wrong.'
+  evidence:
+  - path: /home/ben/task/analysis/exp-02_summary.json
+    locator: accuracy=0.6333, no_answer_marker=0, non_stop_finish=0
+    observation: every failure is a wrong number, never a malformed answer.
+  - path: /home/ben/task/analysis/exp-02_failures.jsonl
+    locator: 55 rows
+    observation: e.g. 60 elves, a third quit, answered 20 left instead of 40; a 4-level sandcastle summed
+      over 5 levels.
+  - path: /home/ben/task/data/rft_pass2.stats.json
+    locator: solve_rate=0.651 at n=16 on the 2727 pass-1 failures
+    observation: the model can reach the right chain on two thirds of the questions it fails at n=4, so
+      the knowledge is there but is not the mode of its distribution.
+  affected_share: 1.0
+  failure_examples:
+  - id: gsm8k_0deb5903
+    source: /home/ben/task/analysis/exp-02_failures.jsonl
+    question: The Doubtfire sisters are driving home with 7 kittens adopted from the local animal shelter
+      when their mother calls to inform them that their two house cats have just had kittens. She says
+      that Patchy
+    gold: '40'
+    model_output: 'otal number of kittens, we add the number of kittens from Patchy and Trixie: 21 (Patchy''s
+      kittens) + 12 (Trixie''s kittens) = 33 kittens.
+
+
+      Therefore, the Doubtfire family now has 33 kittens.
+
+      ANSWER: 33'
+    failure: well-formed chain, wrong reasoning step
+  - id: gsm8k_0e2125c7
+    source: /home/ben/task/analysis/exp-02_failures.jsonl
+    question: A hospital sees 500 people a day.  Each patient is seen for an average of 24 minutes.  The
+      doctors charge $150 an hour to the hospital and the hospital charges the patients $200 an hour.  How
+      much pro
+    gold: '10000'
+    model_output: 'em statement is not consistent with the given data and is flawed.
+
+      So there is no profit made by the hospital from the visits.
+
+      Thus the hospital makes a profit of 0 dollars from these visits.
+
+      ANSWER: 0'
+    failure: well-formed chain, wrong reasoning step
+  - id: gsm8k_10905c21
+    source: /home/ben/task/analysis/exp-02_failures.jsonl
+    question: Nissa hires 60 seasonal workers to play elves in her department store's Santa village. A
+      third of the elves quit after children vomit on them, then 10 of the remaining elves quit after
+      kids kick their
+    gold: '30'
+    model_output: 'After a third of the elves quit, Nissa is left with 60 / 3 = 20 elves.
+
+      Then 10 of the remaining elves quit, so there are 20 - 10 = 10 elves left.
+
+      ANSWER: 10'
+    failure: well-formed chain, wrong reasoning step
+  - id: gsm8k_18abb77f
+    source: /home/ben/task/analysis/exp-02_failures.jsonl
+    question: Luke is spending time at the beach building sandcastles. He eventually notices that each
+      level of a sandcastle will have half the square footage as the level below it. If he makes a 4 leveled
+      sandcast
+    gold: '60'
+    model_output: ' + 2 + 1 = 24 + 4 + 2 + 1 = 28 + 2 + 1 = 30 + 1 = 31
+
+
+      Since there are 4 levels, the average square footage of a level is:
+
+      31 / 4 = 7.75
+
+
+      So, the average square footage of a level is 7.75.
+
+      ANSWER: 7.75'
+    failure: well-formed chain, wrong reasoning step
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_failures.jsonl
+    n: 55
+    selection: all 55 dev-150 items exp-02 got wrong
+hypothesis:
+  claim: Continuing training from exp-02 on 57.8k of its own solutions that were verified against gold,
+    mixed with 25k rows resampled from the original corpus, raises dev-150 accuracy above exp-02's 0.6333.
+  mechanism: 'Rejection sampling reweights the model onto the correct mode of its own distribution: for
+    the 2727 questions it fails at n=4, a correct chain exists at n=16 for 65% of them, so training on
+    those chains makes what is currently a low-probability path the modal one. The 25k original rows are
+    an anchor against distribution collapse onto self-generated phrasing.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: +2 to +6 points, the usual size of one RFT round
+  falsified_if: dev-150 accuracy is at or below exp-02's 0.6333, or fewer than 8 of the 55 watch items
+    are fixed.
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/train_rft.jsonl
+    source: synthetic:self (exp-02 samples, verified against gold) + derived:exp-02 (25000 rows resampled
+      from data/train_sft.jsonl)
+    n_examples: 82845
+    built_by: /home/ben/task/scripts/rft_sample.py
+    build_command:
+    - python
+    - scripts/rft_sample.py
+    - --model
+    - ckpts/exp-02/final
+    - --questions
+    - data/pool_rft.jsonl
+    - --out
+    - data/rft_pass1.jsonl
+    - --out-unsolved
+    - data/pool_hard.jsonl
+    - --n
+    - '4'
+    - --max-per-question
+    - '2'
+    - --temperature
+    - '0.9'
+    - --top-p
+    - '0.95'
+    - --max-tokens
+    - '512'
+    selection: 'pass 1: 30724 questions (7470 gsm8k train + 11254 OpenMathInstruct-2 gsm8k problems unseen
+      in exp-02 + 12000 seen ones), n=4 at T=0.9/top_p=0.95, keep samples that stopped on <end_of_turn>,
+      contain ''ANSWER:'' exactly once, whose last number equals gold, and are at least 80 characters;
+      at most 2 distinct per question chosen at random -> 53373 rows. pass 2: the 2727 questions with
+      no correct sample, n=16 at T=1.0, up to 4 per question -> 4472 rows from 1775 questions. Plus 25000
+      rows resampled from data/train_sft.jsonl.'
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer, custom token-budget batch sampler
+    peft: none
+    hyperparams:
+      lr: 8.0e-06
+      epochs: 1.0
+      batch_size: 8192
+      grad_accum: 8
+      max_seq_len: 1792
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: fp32 master weights, bf16 autocast, adamw_bnb_8bit, weights cast to bf16 before saving
+      seed: 0
+      batch_size_note: batch_size is the per-micro-batch padded-token budget, not a row count
+    target_format: 'chain of thought, then a final line ''ANSWER: <number>'', then <end_of_turn>; prompt
+      tokens masked to -100'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - scripts/train_sft.py
+    - --data
+    - data/train_rft.jsonl
+    - --parent
+    - ckpts/exp-02/final
+    - --out
+    - ckpts/exp-03
+    - --lr
+    - 8e-6
+    - --epochs
+    - '1'
+    - --accum
+    - '8'
+    - --token-budget
+    - '8192'
+    - --max-bs
+    - '64'
+    - --max-len
+    - '1792'
+    - --fewshot-p
+    - '0.2'
+    - --fewshot-ks
+    - 2,4,8
+    - --dtype
+    - fp32
+    - --optim
+    - adamw_bnb_8bit
+    - --attn
+    - flash_attention_2
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.3
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '150'
+    - --max-connections
+    - '8'
+    - --gpu-memory-utilization
+    - '0.85'
+    dev_set: official gsm8k test --limit 150 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42)
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6333
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: how many of exp-02's 55 dev-150 failures are answered correctly, and how many previously-correct
+      items regress
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.16
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-03/final
+    step: 574
+  training_summary:
+    final_loss: 0.206
+    steps: 574
+    notes: 79792 of 82845 rows fit max_seq_len 1792 (3053 dropped, 3.7%); 35.9M tokens; loss 0.212 mean,
+      0.206 at the end; 19.1 rows/s; 1.16 h.
+  measurements:
+  - metric: accuracy
+    value: 0.7
+    n: 150
+    path: /home/ben/task/eval/exp-03_dev150.json
+    delta_vs_comparator: 0.0667
+  diagnostic_result:
+    value: 24.0
+    path: /home/ben/task/analysis/exp-03_summary.json
+    notes: '24 of exp-02''s 55 failures fixed, 31 still failing, 14 items exp-02 answered correctly regressed;
+      net -10 failures. Format stayed clean: 0 missing ANSWER lines, 0 non-stop completions, mean completion
+      413 -> 463 characters (slightly longer chains).'
+  watch_set_result:
+    fixed: 24
+    still_failing: 31
+    regressions: 14
+    path: /home/ben/task/analysis/exp-03_failures.jsonl
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: dev-150 0.6333 -> 0.7000 (+6.7 points, comparator stderr 0.039). 24 of the 55 watch items are
+    fixed against 14 regressions, and completions stay well-formed, so training on the model's own gold-verified
+    chains moved the correct path to the mode as intended rather than just reshuffling which items pass.
+  decision: adopt
+  next_step: 'exp-04: a second RFT round from exp-03. The unique-problem pool is nearly exhausted (11.3k
+    new problems in shards 4-9), but 57k problems from the exp-02 corpus were never sampled on-policy,
+    so they are a fresh source of exp-03''s own verified chains.'

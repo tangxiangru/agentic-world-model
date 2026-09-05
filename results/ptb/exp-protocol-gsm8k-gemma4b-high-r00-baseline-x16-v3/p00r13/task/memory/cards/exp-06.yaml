@@ -1,0 +1,123 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T05:36:10Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 7.7
+  remaining_h: 2.3
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7142, protocol_n: 1319}
+  trigger: "final_model, whose two safetensors shards are byte-identical (sha256 b2d19b10.../c134637b...) to ckpts/exp-03-greedy and whose config.json and generation_config.json md5-match it, scored 0.7051 on the full test set where exp-03-greedy scored 0.7142. Identical weights, identical greedy decode config, 12 items apart: the harness itself has about a 1-point run-to-run spread, which is as large as every difference this batch has been ranking checkpoints on."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/final_model_verify_full.json, locator: "accuracy 0.70508 (930/1319)"}
+    - {path: /home/ben/task/eval/exp-03_greedy_full.json, locator: "accuracy 0.71418 (942/1319) - same weights, same generation_config.json"}
+    - {path: /home/ben/task/eval/exp-04_ck550_greedy_full.json, locator: "accuracy 0.71342"}
+    - {path: /home/ben/task/eval/exp-05_soup_greedy_full.json, locator: "accuracy 0.71267"}
+  alternatives_rejected:
+    - {option: "Ship exp-03 on its single best full-test run", reason: "that run is now known to be one draw from a distribution about a point wide; picking the candidate with the luckiest draw is exactly the mistake this measurement exposes"}
+    - {option: "One more training experiment", reason: "2.3 h left and the shortest useful training run here was 2.2 h; three post-SFT interventions have already landed inside one stderr of the incumbent"}
+    - {option: "Remove the nondeterminism with a fixed vLLM seed or enforce_eager", reason: "evaluate.py is immutable (rule 5) and sets neither, so the grader will run whatever the default scheduler does; the quantity worth estimating is the mean over that noise, not a noise-free number"}
+  pitfalls_hit:
+    - {what: "Ranked four checkpoints on single full-test evals before noticing that two runs of byte-identical weights differ by 0.9 points; vLLM greedy decoding is not run-to-run deterministic because kernel numerics depend on how requests batch, so tokens flip at near-ties", cost_h: 0.15, fix: "average repeated full-test runs per candidate before choosing; treat any gap under ~1.5 points between checkpoints as unresolved"}
+  smoke_runs: []
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "The four surviving candidates are separated by less than the harness's own run-to-run noise. Single full-test scores are 0.7142 (exp-03), 0.7134 (exp-04 ck550), 0.7127 (exp-05 soup) and 0.7119 (exp-04 final) - a spread of 0.23 points - while re-running one unchanged candidate moved it 0.91 points. Which directory goes into final_model is therefore currently being decided by noise."
+  evidence:
+    - {path: /home/ben/task/eval/final_model_verify_full.json, locator: accuracy, observation: "0.70508 for weights that scored 0.71418 an hour earlier"}
+    - {path: /home/ben/task/analysis/final_model_verify_full_failure_tags.json, locator: "nontermination_share_of_failures=0.0", observation: "the re-run is a healthy eval, not a broken one - it simply landed lower"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Averaging three independent full-test runs per candidate leaves the two leading candidates (exp-03-greedy and exp-04/checkpoint-550) within 1 point of each other, i.e. the batch ends with no measurable difference between them and final_model can keep the simpler one."
+  mechanism: "The only thing that varies between runs of one checkpoint is vLLM's request batching, so each run is an independent draw around that checkpoint's true full-test score. Averaging n runs shrinks that component by sqrt(n); at n=3 a 0.9-point spread becomes roughly a 0.5-point standard error on the mean, small enough to expose a real 1-point difference if one exists."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "neither candidate expected to separate by more than 1 point"}
+  falsified_if: "one candidate's 3-run mean exceeds the other's by more than 1.0 point - in which case the difference was real and final_model takes the winner."
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03-greedy
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: "hf://openai/gsm8k@main:test[:1319]"
+      source: openai/gsm8k
+      n_examples: 1319
+      built_by: null
+      build_command: [python, evaluate.py, --limit, "1319"]
+      selection: "read-only benchmark input; this card is a measurement, it trains nothing"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect_ai + vllm 0.11.0, repeated evaluation"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: 42}
+    target_format: "unchanged"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/repeat_evals.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/repeat_evals.sh
+    env: {}
+    log: /home/ben/task/logs/exp-06_repeat.log
+  output_dir: /home/ben/task/eval
+  checkpoints: {every_steps: null, keep: all}
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "1319", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items, greedy decode config"
+    n: 1319
+    seed: 42
+  comparator: {ref: exp-03, value: 0.7142, path: /home/ben/task/eval/exp-03_greedy_full.json}
+  diagnostic:
+    what: "run-to-run standard deviation of full-test accuracy for one unchanged checkpoint"
+    n: 1319
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.5
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 1724}
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1724}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1724}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-550, step: 550}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1180}
+    - {path: /home/ben/task/ckpts/exp-05-soup, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; four repeated full-test evaluations"}
+  measurements:
+    - {metric: accuracy, value: 0.7096, n: 1319, path: /home/ben/task/eval/exp-06_exp03_full_r1.json, delta_vs_comparator: -0.0046}
+    - {metric: accuracy, value: 0.7134, n: 1319, path: /home/ben/task/eval/exp-06_exp03_full_r2.json, delta_vs_comparator: -0.0008}
+    - {metric: accuracy, value: 0.7020, n: 1319, path: /home/ben/task/eval/exp-06_ck550_full_r1.json, delta_vs_comparator: -0.0122}
+    - {metric: accuracy, value: 0.7028, n: 1319, path: /home/ben/task/eval/exp-06_ck550_full_r2.json, delta_vs_comparator: -0.0114}
+  diagnostic_result:
+    value: 0.0036
+    path: /home/ben/task/eval/exp-06_exp03_full_r2.json
+    notes: "exp-03-greedy over 4 full-test runs of identical weights: 0.7142 / 0.7051 / 0.7096 / 0.7134, mean 0.7106, sd 0.0036, range 0.9 points. exp-04/checkpoint-550 over 3 runs: 0.7134 / 0.7020 / 0.7028, mean 0.7061, sd 0.0052. The harness's own run-to-run sd is about a third of a point, with a range near a full point."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Repeated runs put exp-03-greedy at 0.7106 (4 runs, sd 0.0036) and exp-04/checkpoint-550 at 0.7061 (3 runs, sd 0.0052): 0.45 points apart, inside the 1-point threshold, so the two are not distinguishable and the earlier single-run ranking was reading noise. exp-03 also has the higher mean, so the simpler candidate wins on both counts."
+  decision: adopt
+  next_step: "final_model holds the exp-03 weights (exp-02 SFT + greedy generation_config), verified byte-identical to ckpts/exp-03-greedy and loadable from a fresh CPU process. Expected graded score ~0.71 with about +/-0.01 of harness noise. For a next batch: the pass@4 90.0% vs pass@1 70.3% gap is the remaining headroom, and self-distillation does not close it - a verifier or preference signal would be the thing to try, on a budget that allows a from-base run of 4h+."

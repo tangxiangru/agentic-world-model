@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T02:15:58Z'
+situation:
+  elapsed_h: 6.6
+  remaining_h: 3.4
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.728, protocol_n: 500}
+  trigger: "The only intervention that has moved the number is unique-problem count (exp-02 at 21k problems 0.674 -> exp-04 at 70k problems 0.728). Since then on-policy RFT (exp-05) landed on exactly 0.728 and a 3-checkpoint weight soup on 0.732, both inside noise. The gsm8k-derived problem pool is exhausted, so the way to keep pulling the lever that works is a problem pool not derived from GSM8K at all: orca-math-word-problems-200k, 96k of whose rows pass my filters."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_g500_diag.json, locator: "graded_accuracy 0.728", observation: "the RFT continuation reproduced its parent's score exactly"}
+    - {path: /home/ben/task/analysis/soup04_g500_diag.json, locator: "graded_accuracy 0.732", observation: "weight soup of checkpoints 1140/1520/1622, +0.4 points, inside noise"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "conclusion", observation: "+5.4 points came from 3.3x the unique problems"}
+  alternatives_rejected:
+    - {option: "Stop here and ship the soup at 0.732", reason: "3.4 h left; the downside of one more run is only time, because the final model is chosen by evaluation and every existing checkpoint stays on disk"}
+    - {option: "More solutions per already-seen augmented problem", reason: "adds rows, not problems, and rows-per-problem is not the variable that moved the score"}
+    - {option: "MetaMathQA", reason: "also GSM8K/MATH-train derived, so it re-covers the same problems; orca-math is an independently written pool"}
+    - {option: "Retrain from base on OpenMathInstruct + orca", reason: "2.5-3 h of training; would leave no time for the final evaluation and packaging"}
+    - {option: "Train on all 96k filtered orca rows", reason: "46 min is what fits before the packaging deadline; 45k rows plus a 15k anchor slice of sft_v2 is what that buys"}
+  pitfalls_hit:
+    - {what: "orca-math has no gold-answer field, so a wrong answer-extraction rule would silently mislabel every row", cost_h: 0.1, fix: "take the last number in the worked solution, require it to be an integer AND require at most 12 non-punctuation characters after it, which drops 104k of 200k rows"}
+  smoke_runs:
+    - {command: [python, build_orca.py, --out, data/orca_v1.jsonl, --n, '45000'], outcome: "96112 of 200035 rows pass the filters; 45000 sampled"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/orca_v1.decon.jsonl], outcome: "45000 documents scanned, 0 contaminated, exit 0"}
+    - {command: [python, train_sft.py, --data, data/orca_mix.jsonl, --output-dir, /tmp/x, --dry-run], outcome: "38.73M tokens; 10 of 60000 rows over max_seq_len (0.017%); every target ends in <end_of_turn>"}
+problem:
+  statement: "Every training problem the model has seen is either a GSM8K training problem or an LLM-written variation of one. 27% of dev items are still answered wrong, and the two interventions tried since exp-04 (on-policy RFT, weight averaging) moved the score by 0.0 and +0.4 points, so the residual errors are not a formatting or decoding artefact - they look like coverage."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_final_g500_diag.json, locator: "graded_accuracy 0.728, non_stop_share 0.006", observation: "incumbent"}
+    - {path: /home/ben/task/analysis/exp-05_g500_diag.json, locator: "graded_accuracy 0.728, non_stop_share 0.008", observation: "on-policy data changed nothing"}
+  affected_share: 0.272
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-04/final for one epoch at lr 5e-6 on 45k orca-math word problems (a problem pool independent of GSM8K) mixed with 15k sft_v2 rows raises greedy dev-500 accuracy above exp-04's 0.728."
+  mechanism: "The variable that has moved this benchmark is the number of distinct word problems the model has been trained to solve; orca-math adds 45k problems that share GSM8K's domain (grade-school arithmetic word problems) without being derived from it, so it extends coverage instead of re-covering it. The 15k sft_v2 rows anchor the answer format and phrasing the grader sees."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+1 to +3 points"
+  falsified_if: "greedy dev-500 accuracy at or below 0.728. Two ways that can happen and they are distinguishable afterwards: orca-math's answers are GPT-4-written and unverified, so label noise could cancel the coverage gain; and its problems include a translated-Korean-name subpopulation stylistically unlike GSM8K."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/orca_mix.jsonl
+      source: "microsoft/orca-math-word-problems-200k (45000 rows) + derived:exp-04 slice of nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e via data/sft_v2.jsonl (15000 rows)"
+      n_examples: 60000
+      built_by: /home/ben/task/build_orca.py
+      build_command: [python, mix_data.py, --inputs, "data/orca_v1.jsonl:0", "data/sft_v2.jsonl:15000", --out, data/orca_mix.jsonl, --seed, '5']
+      selection: "orca rows: 40-2200 char solutions, no \\boxed / #### / pre-existing 'ANSWER:', last number in the solution must be an integer with at most 12 non-punctuation characters after it (that number becomes the label); target = solution + blank line + 'ANSWER: <int>' + <end_of_turn>; 10% get a 4-shot and 10% a 10-shot prefix from the openai/gsm8k TRAIN split"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with liger-kernel 0.8.2 fused linear CE"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 32768, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, max_bs: 96}
+    target_format: "identical to exp-02/exp-04/exp-05: templates/gemma3.jinja + inspect_evals' MATH_PROMPT_TEMPLATE; completion = solution, blank line, 'ANSWER: <int>', then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/orca_mix.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --output-dir, /home/ben/task/ckpts/exp-06, --epochs, '1', --lr, '5e-6', --token-budget, '32768', --max-bs, '96', --grad-accum, '2', --max-seq-len, '2816', --save-steps, '300', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 300
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+evaluation:
+  protocol:
+    command: [python, eval_model.py, --model-path, '{checkpoint}_greedy', --tag, '{tag}', --limit, '500']
+    dev_set: "official inspect_evals/gsm8k test split --limit 500 (first 500 items, no shuffle), greedy decoding via generation_config.json temperature 0.0"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-04
+    value: 0.728
+    path: /home/ben/task/eval/exp-04_final_g500.json
+  diagnostic:
+    what: "mid-run checkpoint at step 300 evaluated under the same protocol, to tell 'orca data helps' from 'any extra epoch helps' and to catch drift toward orca's style"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.76
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-300, step: 300}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-618, step: 618}
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 618}
+  training_summary: {final_loss: 0.2847, steps: 618, notes: "2754s wall, 14.1k tokens/s, 38.7M tokens, 1 epoch from exp-04/final"}
+  measurements:
+    - {metric: accuracy, value: 0.654, n: 500, path: /home/ben/task/eval/exp-06_g500.json, delta_vs_comparator: -0.074}
+    - {metric: accuracy, value: 0.662, n: 500, path: /home/ben/task/eval/exp-06_ck300_g500.json, delta_vs_comparator: -0.066}
+  diagnostic_result:
+    value: 0.662
+    path: /home/ben/task/analysis/exp-06_ck300_g500_diag.json
+    notes: "step 300 (half an epoch) already 0.662, step 618 0.654: the damage arrives early and does not recover, so it is the data and not the number of extra steps. non_stop_share rose 0.006 -> 0.014."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Greedy dev-500 0.728 -> 0.654 (-7.4 points); the half-epoch checkpoint is already at 0.662, so orca-math actively damages the model rather than failing to help. 'More distinct word problems' is not the mechanism after all - what mattered in exp-04 was more distinct problems WITH verified answers in the target style. orca-math's labels are unverified GPT-4 output and my last-integer extraction rule adds its own error on top."
+  decision: reject
+  next_step: "Fall back to the exp-04 family. Choose between exp-04/final (0.728) and the 3-checkpoint soup (0.732) on the 819 test items that were never part of the dev-500 selection set, then package the winner."

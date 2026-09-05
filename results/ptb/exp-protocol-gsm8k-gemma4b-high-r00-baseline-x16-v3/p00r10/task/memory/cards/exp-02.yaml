@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T15:34:50Z'
+situation:
+  elapsed_h: 0.3
+  remaining_h: 9.7
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0467, protocol_n: 150}
+  trigger: "exp-01's diagnostic: 67 of 150 base completions run to max_tokens without ever emitting <end_of_turn>, and only 12% have the right number at their first 'ANSWER:' line (analysis/exp-01_diagnostic.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "first_answer_accuracy=0.12, natural_stop=83/150"}
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "result.diagnostic_result"}
+  alternatives_rejected:
+    - {option: "Decode-config fix only (add a stop string, shrink max_tokens)", reason: "evaluate.py is immutable and passes no stop strings; and it would cap the score near 0.12, the first-answer accuracy"}
+    - {option: "LoRA instead of full fine-tune", reason: "the base model has never produced a terminated chat turn; that is a large distribution shift, and full FT fits in 80 GB once micro-batches are capped at 8192 padded tokens"}
+    - {option: "Train on MetaMathQA", reason: "its targets carry 'The answer is: N' on top of GSM8K's own '#### N' - two answer markers, exactly pitfall double_answer_format. OpenMathInstruct-2 has one \\boxed per solution, cleanly rewritable to a single 'ANSWER: N'"}
+    - {option: "Include augmented_math rows from OpenMathInstruct-2", reason: "the benchmark is grade-school word problems only; spend the first epoch's tokens on the matching distribution and reconsider if the score plateaus"}
+  pitfalls_hit:
+    - {what: "First smoke run OOMed at per_device_batch_size=8: gemma-3's 262k vocab makes the cross-entropy upcast a (8 x 2560 x 262144) fp32 tensor = 21 GiB", cost_h: 0.15, fix: "replaced fixed row batches with a token-budget batch sampler (max 8192 padded tokens per micro-batch), per_device_batch_size=1"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --out, /home/ben/task/ckpts/smoke, --max-steps, '8'], outcome: "8 steps in 27 s, loss 0.54, 3.34 s/step -> ~0.87 h for the 935-step epoch; checkpoint deleted"}
+    - {command: [python, fmt.py], outcome: "hand-rolled prompt rendering == tokenizer.apply_chat_template with templates/gemma3.jinja, byte-for-byte (template sha256[:12]=7de1c58e208e)"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/sft_v1_check.jsonl], outcome: "58943 documents scanned, 0 contaminated, exit 0"}
+problem:
+  statement: "google/gemma-3-4b-pt cannot produce a gradeable answer: it never emits <end_of_turn>, so after solving the problem it keeps inventing further problems, and the grader - which matches numerically at the END of the completion - reads whatever the ramble ended on. It scored 0.0467 on dev-150 while its first answer was right 12% of the time."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "natural_stop=83, no_answer=25", observation: "67 of 150 hit max_tokens=4000; 25 never wrote an 'ANSWER:' line at all"}
+    - {path: /home/ben/task/logs/2026-09-02T15-25-57+00-00_gsm8k_Ahqv6tV8gdkQnHtJHhF6Ed.json, locator: "samples[0], samples[1]", observation: "sample 0 answers 50 correctly then degenerates into 'The moon / The sun / ANSWER:' repeats; sample 1 answers then invents a new problem in Hindi"}
+  affected_share: 0.95
+  failure_examples:
+    - {id: dev-000, source: /home/ben/task/logs/2026-09-02T15-25-57+00-00_gsm8k_Ahqv6tV8gdkQnHtJHhF6Ed.json, question: "first dev item (Amir/Cody cookies)", gold: "50", model_output: "...ANSWER: 50 [then ~4000 tokens of unrelated text ending] ANSWER: 187", failure: "correct answer produced then buried; graded on the trailing 187"}
+    - {id: dev-001, source: /home/ben/task/logs/2026-09-02T15-25-57+00-00_gsm8k_Ahqv6tV8gdkQnHtJHhF6Ed.json, question: "second dev item (bad/unripe/sour oranges)", gold: "600", model_output: "ANSWER: 44, then a self-invented salesman problem, ending 'ANSWER: 3/20'", failure: "no turn terminator; the reasoning was wrong as well"}
+    - {id: dev-agg, source: /home/ben/task/analysis/exp-01_diagnostic.json, question: "aggregate over dev-150", gold: "n/a", model_output: "18/150 first answers correct, 7/150 scored correct", failure: "11 of 18 correct first answers lost purely to the missing stop token"}
+  watch_set: null
+hypothesis:
+  claim: "Completion-only SFT of google/gemma-3-4b-pt on 58.9k GSM8K-train-derived chain-of-thought targets, rendered through the grader's own gemma3.jinja and terminated with a single 'ANSWER: N' line followed by <end_of_turn>, will raise dev-150 accuracy above the base model's 0.0467."
+  mechanism: "Two effects stack. (1) Every target ends with <end_of_turn>, which is already in the base generation_config's eos list, so vLLM stops there and the grader's end-of-output match reads the intended number instead of a ramble - that alone should recover the gap between 0.0467 and the 0.12 first-answer accuracy. (2) 28.5M tokens of answer-verified grade-school CoT improve the reasoning itself, which is what has to move the score past 0.12."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+0.4 or more; SFT on OpenMathInstruct-2-scale GSM8K data typically puts a 4B model in the 0.55-0.75 band"
+  falsified_if: "dev-150 accuracy stays at or below 0.12, the base model's first-answer ceiling - i.e. the run bought only the stop token and no reasoning; or completions still fail to terminate, which would mean the target format never reached the model."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "openai/gsm8k@740312a (train split, x2) + nvidia/OpenMathInstruct-2@469216e (train_1M, problem_source in {gsm8k, augmented_gsm8k})"
+      n_examples: 58943
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v1.jsonl, --omi2-rows, '44000', --gsm8k-repeats, '2', --fewshot-frac, '0.08']
+      selection: "OpenMathInstruct-2 rows filtered to integer expected_answer, exactly one \\boxed in the solution, body 30-3000 chars; \\boxed stripped; rows containing '####' or 'ANSWER:' dropped so each target carries one answer marker. GSM8K train included twice with its original solutions (calculator annotations kept, matching the fewshot demos the grader injects). 8% of rows are rendered with the grader's exact 10-shot system prefix so the model sees the prompt shape it will be graded on. Everything derives from the TRAIN split only."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with a custom token-budget batch sampler"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 1, grad_accum: 4, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, token_budget: 8192, adam_beta2: 0.95}
+    target_format: "chain of thought, blank line, 'ANSWER: <integer>', then <end_of_turn>. Loss on the completion only; the prompt (including the optional 10-shot prefix) is masked with -100."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_v1.jsonl, --out, /home/ben/task/ckpts/exp-02, --lr, '1e-5', --epochs, '1', --token-budget, '8192', --grad-accum, '4', --max-seq-len, '3072', --save-steps, '300']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {HF_HOME: /home/ben/hf_cache, PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 300
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k main test, deterministic order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0467
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions that terminate naturally (stop_reason == 'stop') rather than hitting max_tokens - separates the format half of the hypothesis from the reasoning half"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.84
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-300, step: 300}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-900, step: 900}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-936, step: 936}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 936}
+  training_summary: {final_loss: 0.334, steps: 936, notes: "train_loss 0.345 mean, 3039 s wall, 3.25 s/step, 28.5M target+prompt tokens, 4 rows dropped over max_seq_len"}
+  measurements:
+    - {metric: accuracy, value: 0.5333, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.4866}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-02_diag.json
+    notes: "150/150 completions now terminate naturally and 150/150 contain an 'ANSWER:' line; median completion 302 chars (base: ran to 4000 tokens). The format defect is fully gone."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.0467 -> 0.5333 (+48.7 pts). Both halves of the mechanism fired: every completion now stops at <end_of_turn> with a single 'ANSWER: N' last line, and accuracy is far past the 0.12 first-answer ceiling, so the CoT data bought real reasoning and not just the stop token."
+  decision: adopt
+  next_step: "exp-03. Two post-hoc measurements say what is now limiting. (a) Splitting the dev-150 completions by style: 90 outputs carry GSM8K's terse '<<a*b=c>>' calculator style and score 0.444, while 60 verbose OpenMathInstruct-style outputs score 0.667. (b) probe.py on 300 held-out OpenMathInstruct problems (analysis/exp-02_probe.json) scores 0.683 with the 10-shot prefix and 0.647 without, with only 6% terse outputs - so the terse style is triggered by real GSM8K-looking questions, not by the prefix, and its only source in training is the 14.9k raw GSM8K-train human solutions I deliberately included. Drop those, keep OpenMathInstruct's own verbose solutions to the same GSM8K-train questions, and scale the data up."

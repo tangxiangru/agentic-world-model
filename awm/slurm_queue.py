@@ -14,9 +14,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from awm import ptb_environment
+
 DEFAULT_QUEUE_ROOT = Path("/rmeng_data/robtang/slurm-queue")
 DEFAULT_NODES = [f"slurm2-a3nodesetondem-{index}" for index in range(4)]
+DEFAULT_SUBQUEUES = {
+    "gangda_exp-protocol-evolve": {
+        "branches": ["gangda_exp_protocol_evolve"],
+        "gpu_limit": 16,
+        "nodes": DEFAULT_NODES[:2],
+    },
+    "gangda_wma_evolve": {
+        "branches": ["gangda_wma_evolve"],
+        "gpu_limit": 16,
+        "nodes": DEFAULT_NODES[2:],
+    },
+}
 ACTIVE_STATES = {"RUNNING", "PENDING", "CONFIGURING", "COMPLETING", "SUSPENDED"}
+ALLOCATED_STATES = ACTIVE_STATES - {"PENDING"}
 FAILURE_STATES = {"FAILED", "OUT_OF_MEMORY", "TIMEOUT", "NODE_FAIL", "BOOT_FAIL"}
 
 
@@ -32,6 +47,17 @@ def default_registry_path() -> Path:
     return queue_root() / "registry.json"
 
 
+def _default_subqueues() -> dict[str, dict[str, Any]]:
+    return {
+        name: {
+            "branches": list(config["branches"]),
+            "gpu_limit": config["gpu_limit"],
+            "nodes": list(config["nodes"]),
+        }
+        for name, config in DEFAULT_SUBQUEUES.items()
+    }
+
+
 def _default_registry() -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -43,8 +69,59 @@ def _default_registry() -> dict[str, Any]:
             "nodes": DEFAULT_NODES,
             "gpus_per_node": 8,
         },
+        "subqueues": _default_subqueues(),
         "sources": [],
     }
+
+
+def _validate_subqueues(data: dict[str, Any], path: Path | None = None) -> None:
+    where = f": {path}" if path else ""
+    subqueues = data.get("subqueues")
+    if not isinstance(subqueues, dict) or not subqueues:
+        raise QueueError(f"ownership registry has no subqueue map{where}")
+    scope = data.get("scope") or {}
+    scope_nodes = set(scope.get("nodes") or DEFAULT_NODES)
+    gpus_per_node = int(scope.get("gpus_per_node", 8))
+    assigned_nodes: set[str] = set()
+    assigned_gpus = 0
+    for name, config in subqueues.items():
+        if not isinstance(name, str) or not name or not isinstance(config, dict):
+            raise QueueError(f"invalid subqueue entry {name!r}{where}")
+        nodes = config.get("nodes")
+        branches = config.get("branches")
+        gpu_limit = config.get("gpu_limit")
+        if (
+            not isinstance(nodes, list)
+            or not nodes
+            or not all(isinstance(node, str) and node for node in nodes)
+        ):
+            raise QueueError(f"subqueue {name} has invalid nodes{where}")
+        if (
+            not isinstance(branches, list)
+            or not branches
+            or not all(isinstance(branch, str) and branch for branch in branches)
+        ):
+            raise QueueError(f"subqueue {name} has invalid branches{where}")
+        if not isinstance(gpu_limit, int) or gpu_limit <= 0:
+            raise QueueError(f"subqueue {name} has invalid gpu_limit{where}")
+        if set(nodes) - scope_nodes:
+            raise QueueError(f"subqueue {name} names nodes outside the gangda scope{where}")
+        if assigned_nodes & set(nodes):
+            raise QueueError(f"subqueue {name} overlaps another subqueue's nodes{where}")
+        expected = len(nodes) * gpus_per_node
+        if gpu_limit != expected:
+            raise QueueError(
+                f"subqueue {name} gpu_limit={gpu_limit} does not match "
+                f"{len(nodes)} node(s) x {gpus_per_node} GPU(s){where}"
+            )
+        assigned_nodes.update(nodes)
+        assigned_gpus += gpu_limit
+    total_gpus = len(scope_nodes) * gpus_per_node
+    if assigned_nodes != scope_nodes or assigned_gpus != total_gpus:
+        raise QueueError(
+            f"subqueues cover {assigned_gpus}/{total_gpus} GPUs and "
+            f"{len(assigned_nodes)}/{len(scope_nodes)} nodes{where}"
+        )
 
 
 def load_registry(path: Path | None = None) -> dict[str, Any]:
@@ -57,7 +134,28 @@ def load_registry(path: Path | None = None) -> dict[str, Any]:
         raise QueueError(f"cannot read ownership registry {path}: {exc}") from exc
     if data.get("schema_version") != 1 or not isinstance(data.get("sources"), list):
         raise QueueError(f"invalid ownership registry: {path}")
+    data.setdefault("subqueues", _default_subqueues())
+    _validate_subqueues(data, path)
     return data
+
+
+def subqueue_config(data: dict[str, Any], name: str) -> dict[str, Any]:
+    _validate_subqueues(data)
+    config = data["subqueues"].get(name)
+    if not isinstance(config, dict):
+        raise QueueError(f"unknown gangda subqueue: {name}")
+    return config
+
+
+def subqueue_for_branch(data: dict[str, Any], branch: str) -> str | None:
+    matches = [
+        name
+        for name, config in data["subqueues"].items()
+        if branch in config.get("branches", [])
+    ]
+    if len(matches) > 1:
+        raise QueueError(f"branch {branch} belongs to multiple gangda subqueues")
+    return matches[0] if matches else None
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -110,6 +208,20 @@ def register_receipt(
     batch_id = str(receipt.get("batch_id", receipt_path.parent.name))
     receipt_kind = str(receipt.get("kind", ""))
     default_label = f"{batch_id} [{receipt_kind}]" if receipt_kind else batch_id
+    registry = load_registry(registry_path)
+    declared_subqueue = str(
+        receipt.get("subqueue") or (receipt.get("site") or {}).get("subqueue") or ""
+    )
+    branch = str((receipt.get("ownership") or {}).get("branch", ""))
+    inferred_subqueue = subqueue_for_branch(registry, branch) if branch else None
+    if declared_subqueue:
+        subqueue_config(registry, declared_subqueue)
+    if declared_subqueue and inferred_subqueue and declared_subqueue != inferred_subqueue:
+        raise QueueError(
+            f"receipt declares subqueue {declared_subqueue} but branch {branch} belongs to "
+            f"{inferred_subqueue}"
+        )
+    subqueue = declared_subqueue or inferred_subqueue
     source = {
         "id": f"receipt:{receipt_path}",
         "kind": "receipt",
@@ -122,6 +234,16 @@ def register_receipt(
         "jobs": normalized_jobs,
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
+    if subqueue:
+        source["subqueue"] = subqueue
+        try:
+            allowed = ptb_environment.effective_nodes(receipt, set(subqueue_config(registry, subqueue)["nodes"]))
+        except ptb_environment.EnvironmentError as exc:
+            raise QueueError(str(exc)) from exc
+        if "placement" in receipt:
+            source["placement"] = receipt["placement"]
+            for job in source["jobs"]:
+                job["requested_nodes"] = sorted(allowed)
     return _update_registry(source, registry_path)
 
 
@@ -174,8 +296,11 @@ def register_job(
     *,
     label: str,
     source_id: str | None = None,
+    subqueue: str | None = None,
     registry_path: Path | None = None,
 ) -> Path:
+    if subqueue:
+        subqueue_config(load_registry(registry_path), subqueue)
     job = _job_record(job_id)
     source = {
         "id": source_id or f"job:{job_id}",
@@ -184,6 +309,8 @@ def register_job(
         "jobs": [job],
         "registered_at": datetime.now(timezone.utc).isoformat(),
     }
+    if subqueue:
+        source["subqueue"] = subqueue
     return _update_registry(source, registry_path)
 
 
@@ -195,13 +322,23 @@ def _command(command: list[str]) -> str:
 
 
 def _live_jobs() -> dict[str, dict[str, str]]:
-    output = _command(["squeue", "-h", "-o", "%i|%T|%R|%N|%j|%M|%u|%P"])
+    output = _command(["squeue", "-h", "-o", "%i|%T|%R|%N|%j|%M|%u|%P|%b"])
     rows = {}
     for line in output.splitlines():
-        parts = line.split("|", 7)
-        if len(parts) != 8:
+        parts = line.split("|", 8)
+        if len(parts) not in (8, 9):
             continue
-        job_id, state, reason, nodes, name, elapsed, user, partition = parts
+        job_id, state, reason, nodes, name, elapsed, user, partition = parts[:8]
+        tres_per_node = parts[8] if len(parts) == 9 else ""
+        gpus = 1
+        if tres_per_node:
+            gpus = 0
+            for item in tres_per_node.split(","):
+                if item.startswith(("gpu:", "gres/gpu:")):
+                    try:
+                        gpus += int(item.rsplit(":", 1)[1])
+                    except ValueError:
+                        pass
         rows[job_id] = {
             "job_id": job_id,
             "state": state,
@@ -211,6 +348,9 @@ def _live_jobs() -> dict[str, dict[str, str]]:
             "elapsed": elapsed,
             "user": user,
             "partition": partition,
+            # Gangda PTB cells are one-GPU jobs.  The eight-field fallback keeps
+            # snapshots compatible with older/mock squeue output.
+            "gpus": gpus,
         }
     return rows
 
@@ -305,6 +445,7 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
                     "job_id": job_id,
                     "cell_id": expected_job.get("cell_id", ""),
                     "expected_name": expected_job.get("job_name", ""),
+                    "requested_nodes": expected_job.get("requested_nodes"),
                     "work_dir": expected_job.get("work_dir", ""),
                     "stdout": expected_job.get("stdout", ""),
                 }
@@ -331,6 +472,7 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
                 "registered_at": source.get("registered_at", ""),
                 "manifest": source.get("manifest", ""),
                 "spec": source.get("spec", ""),
+                "subqueue": source.get("subqueue", ""),
                 "counts": dict(sorted(counts.items())),
                 "active": sum(count for state, count in counts.items() if state in ACTIVE_STATES),
                 "jobs": jobs,
@@ -338,6 +480,62 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
         )
 
     node_status = _node_status(nodes, gpus_per_node)
+    node_by_name = {node["node"]: node for node in node_status}
+    subqueues = []
+    placement_violations: list[dict[str, Any]] = []
+    capacity_violations: list[dict[str, Any]] = []
+    for name, config in registry["subqueues"].items():
+        subqueue_nodes = [node_by_name[node] for node in config["nodes"]]
+        allowed_nodes = set(config["nodes"])
+        allocated_jobs = [
+            job
+            for source in sources
+            if source["subqueue"] == name
+            for job in source["jobs"]
+            if _state_key(job.get("state")) in ALLOCATED_STATES
+        ]
+        registered_running_gpus = sum(int(job.get("gpus", 1)) for job in allocated_jobs)
+        for job in allocated_jobs:
+            actual_nodes = {
+                part
+                for part in str(job.get("nodes", "")).split(",")
+                if part and part not in {"-", "(null)", "N/A"}
+            }
+            job_allowed = set(job["requested_nodes"]) if job.get("requested_nodes") else allowed_nodes
+            job_allowed &= allowed_nodes
+            outside = sorted(actual_nodes - job_allowed)
+            if outside:
+                placement_violations.append(
+                    {
+                        "job_id": job["job_id"],
+                        "subqueue": name,
+                        "expected_nodes": sorted(job_allowed),
+                        "actual_nodes": sorted(actual_nodes),
+                        "outside_nodes": outside,
+                    }
+                )
+        if registered_running_gpus > config["gpu_limit"]:
+            capacity_violations.append(
+                {
+                    "subqueue": name,
+                    "registered_running_gpus": registered_running_gpus,
+                    "gpu_limit": config["gpu_limit"],
+                }
+            )
+        subqueues.append(
+            {
+                "name": name,
+                "branches": list(config["branches"]),
+                "gpu_limit": config["gpu_limit"],
+                "nodes": subqueue_nodes,
+                "gpus_allocated": sum(node["gpus_allocated"] for node in subqueue_nodes),
+                "gpus_total": config["gpu_limit"],
+                "active_registered": sum(
+                    source["active"] for source in sources if source["subqueue"] == name
+                ),
+                "registered_running_gpus": registered_running_gpus,
+            }
+        )
     snapshot = {
         "schema_version": 1,
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -345,12 +543,17 @@ def collect_snapshot(registry_path: Path | None = None) -> dict[str, Any]:
         "queue_name": registry.get("queue_name", "gangda"),
         "owner": registry.get("owner", ""),
         "scope": scope,
-        "ownership_ok": not unknown and not name_mismatches,
+        "ownership_ok": not (
+            unknown or name_mismatches or placement_violations or capacity_violations
+        ),
         "unknown_jobs": sorted(unknown, key=lambda item: item["job_id"]),
         "name_mismatches": name_mismatches,
+        "placement_violations": placement_violations,
+        "capacity_violations": capacity_violations,
         "nodes": node_status,
         "gpus_allocated": sum(node["gpus_allocated"] for node in node_status),
         "gpus_total": sum(node["gpus_total"] for node in node_status),
+        "subqueues": subqueues,
         "sources": sources,
     }
     return snapshot
@@ -374,18 +577,76 @@ def _job_line(job: dict[str, Any]) -> str:
     )
 
 
-def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> str:
+def select_subqueue(snapshot: dict[str, Any], name: str) -> dict[str, Any]:
+    selected = next((item for item in snapshot.get("subqueues", []) if item["name"] == name), None)
+    if selected is None:
+        raise QueueError(f"unknown gangda subqueue: {name}")
+    node_names = {node["node"] for node in selected["nodes"]}
+    view = dict(snapshot)
+    view["selected_subqueue"] = name
+    view["nodes"] = selected["nodes"]
+    view["gpus_allocated"] = selected["gpus_allocated"]
+    view["gpus_total"] = selected["gpus_total"]
+    view["sources"] = [
+        source for source in snapshot["sources"] if source.get("subqueue") == name
+    ]
+    selected_job_ids = {
+        str(job["job_id"]) for source in view["sources"] for job in source.get("jobs", [])
+    }
+    view["unknown_jobs"] = [
+        job
+        for job in snapshot["unknown_jobs"]
+        if {part for part in job.get("nodes", "").split(",") if part} & node_names
+    ]
+    view["name_mismatches"] = [
+        item for item in snapshot["name_mismatches"] if str(item["job_id"]) in selected_job_ids
+    ]
+    view["placement_violations"] = [
+        item for item in snapshot.get("placement_violations", []) if item["subqueue"] == name
+    ]
+    view["capacity_violations"] = [
+        item for item in snapshot.get("capacity_violations", []) if item["subqueue"] == name
+    ]
+    view["ownership_ok"] = not (
+        view["unknown_jobs"]
+        or view["name_mismatches"]
+        or view["placement_violations"]
+        or view["capacity_violations"]
+    )
+    return view
+
+
+def render_snapshot(
+    snapshot: dict[str, Any], *, include_jobs: bool = True, subqueue: str | None = None
+) -> str:
     """Render the operational view: only jobs that are active now."""
+    if subqueue:
+        snapshot = select_subqueue(snapshot, subqueue)
     verdict = "OK" if snapshot["ownership_ok"] else "FAIL"
     lines = [
         f"updated={snapshot['updated_at']}",
         f"QUEUE {snapshot.get('queue_name', 'gangda')}",
-        f"OWNERSHIP {verdict}  owner={snapshot['owner']}",
-        f"GPUS {snapshot['gpus_allocated']}/{snapshot['gpus_total']} allocated",
     ]
+    if snapshot.get("selected_subqueue"):
+        lines.append(f"SUBQUEUE {snapshot['selected_subqueue']}")
+    lines.extend(
+        [
+            f"OWNERSHIP {verdict}  owner={snapshot['owner']}",
+            f"GPUS {snapshot['gpus_allocated']}/{snapshot['gpus_total']} allocated",
+        ]
+    )
     guard = snapshot.get("guard") or {}
     if guard.get("enabled"):
         lines.insert(2, f"GUARD ON  unknown_grace={guard['grace_seconds']}s")
+    if not snapshot.get("selected_subqueue") and snapshot.get("subqueues"):
+        lines.append("SUBQUEUES")
+        for item in snapshot["subqueues"]:
+            nodes = ",".join(node["node"] for node in item["nodes"])
+            lines.append(
+                f"  {item['name']}: GPUS {item['gpus_allocated']}/{item['gpus_total']} "
+                f"allocated registered_active={item['active_registered']} "
+                f"registered_running_gpus={item['registered_running_gpus']} nodes={nodes}"
+            )
     for node in snapshot["nodes"]:
         lines.append(
             f"  {node['node']}: {node['gpus_allocated']}/{node['gpus_total']} state={node['state']}"
@@ -398,7 +659,8 @@ def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> s
             for state, count in source["counts"].items()
             if state in ACTIVE_STATES
         )
-        lines.append(f"  {source['label']}: {counts}")
+        queue_tag = source.get("subqueue") or "unassigned"
+        lines.append(f"  [{queue_tag}] {source['label']}: {counts}")
         if include_jobs:
             for job in source["jobs"]:
                 if _state_key(job.get("state")) in ACTIVE_STATES:
@@ -418,14 +680,41 @@ def render_snapshot(snapshot: dict[str, Any], *, include_jobs: bool = True) -> s
                 f"  {mismatch['job_id']} expected={mismatch['expected']} "
                 f"actual={mismatch['actual']}"
             )
+    if snapshot.get("placement_violations"):
+        lines.append("PLACEMENT VIOLATIONS")
+        for violation in snapshot["placement_violations"]:
+            lines.append(
+                f"  {violation['job_id']} subqueue={violation['subqueue']} "
+                f"expected={','.join(violation['expected_nodes'])} "
+                f"actual={','.join(violation['actual_nodes'])}"
+            )
+    if snapshot.get("capacity_violations"):
+        lines.append("CAPACITY VIOLATIONS")
+        for violation in snapshot["capacity_violations"]:
+            lines.append(
+                f"  {violation['subqueue']} registered_running_gpus="
+                f"{violation['registered_running_gpus']} gpu_limit={violation['gpu_limit']}"
+            )
     return "\n".join(lines) + "\n"
 
 
-def _has_validated_ptb_result(job_id: str) -> bool:
+def _source_task(source: dict[str, Any], job: dict[str, Any]) -> str | None:
     from awm import ptb_experiments
 
+    try:
+        receipt = ptb_experiments.load_receipt(Path(str(source.get("path", ""))))
+        return ptb_experiments.receipt_task(receipt, str(job["job_id"]), str(job.get("cell_id", "")))
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def _has_validated_ptb_result(job_id: str, *, expected_task: str | None = None) -> bool:
+    from awm import ptb_experiments
+
+    if not expected_task:
+        return False
     result_dir = ptb_experiments.result_for_job(job_id)
-    return result_dir is not None and not ptb_experiments.audit_result(result_dir)
+    return result_dir is not None and not ptb_experiments.audit_result(result_dir, expected_task=expected_task)
 
 
 def failure_records(snapshot: dict[str, Any], *, include_resolved: bool = False) -> list[dict]:
@@ -450,7 +739,7 @@ def failure_records(snapshot: dict[str, Any], *, include_resolved: bool = False)
             cell_id = str(job.get("cell_id", ""))
             replacement = (
                 {"source": "validated PTB result", "job_id": job["job_id"], "state": "COMPLETE"}
-                if _has_validated_ptb_result(str(job["job_id"]))
+                if _has_validated_ptb_result(str(job["job_id"]), expected_task=_source_task(source, job))
                 else None
             )
             if replacement is None:
@@ -485,7 +774,12 @@ def render_failures(snapshot: dict[str, Any], *, include_resolved: bool = False)
         f"updated={snapshot['updated_at']}",
         f"QUEUE {snapshot.get('queue_name', 'gangda')} FAILURES",
     ]
-    if snapshot["unknown_jobs"] or snapshot["name_mismatches"]:
+    if (
+        snapshot["unknown_jobs"]
+        or snapshot["name_mismatches"]
+        or snapshot.get("placement_violations")
+        or snapshot.get("capacity_violations")
+    ):
         lines.append("OWNERSHIP FAIL")
     if not failures:
         lines.append("NO UNRESOLVED FAILURES")
@@ -573,7 +867,7 @@ def explain_job(snapshot: dict[str, Any], job_id: str) -> dict[str, Any]:
             result_dir = ptb_experiments.result_for_job(str(job_id))
             if result_dir:
                 metrics = ptb_results._read_json(result_dir / "metrics.json")
-                issues = ptb_experiments.audit_result(result_dir)
+                issues = ptb_experiments.audit_result(result_dir, expected_task=_source_task(source, job))
                 explanation["result"] = {
                     "path": str(result_dir),
                     "complete": not issues,

@@ -1,0 +1,182 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-02T18:43:23Z'
+situation:
+  elapsed_h: 6.3
+  remaining_h: 3.7
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.58, protocol_n: 200}
+  trigger: "exp-03 came out at 0.570 vs exp-02's 0.580 while fixing 30 of 84 failures
+    and breaking 32 previously-correct items: the RFT signal reshuffled which
+    problems are solved instead of adding any (analysis/exp-03_watch_rerun.json)."
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-03_watch_rerun.json
+    locator: "fixed 30, still_failing 54, regressions 32"
+  - path: /home/ben/task/analysis/exp-03_failure_tags.json
+    locator: "median completion length 382 chars vs exp-02's 403"
+  alternatives_rejected:
+  - option: "A second RFT round from exp-03"
+    reason: "exp-03 is not an improvement to build on, and a second round of the same
+      procedure would inherit whatever made the first one null."
+  - option: "GRPO / online RL"
+    reason: "3.7 h left. An unproven trainer plus a sampling loop cannot be debugged
+      and run inside that, and the two bugs already hit in the sampling path (double
+      bos, missing stop token) cost 1.8 h between them."
+  - option: "Continue exp-02 for a second epoch of the same corpus"
+    reason: "exp-02 already ended at loss 0.30 on that corpus; a second pass mostly
+      memorises. The union adds 17k rows of genuinely new, on-policy targets."
+  - option: "Keep exp-02 and stop"
+    reason: "still the fallback - final_model already holds exp-02, and exp-04 is only
+      adopted if it beats 0.58 under the same protocol."
+  pitfalls_hit:
+  - what: "exp-03 selected the two SHORTEST correct samples per problem, which
+      shortened chains of thought; for a 4B model a shorter chain is a worse chain"
+    cost_h: 0.7
+    fix: "re-derive the RFT rows from the saved raw dump with an unbiased random
+      pick of 2 distinct correct samples per problem (median target length 436
+      chars). No new GPU time: the raw generations were on disk."
+  smoke_runs:
+  - command: [python, scripts/train_sft.py, --dry-run, --data, data/union_v2.jsonl]
+    outcome: "80764/80764 rows end in <end_of_turn> under loss, 0 truncated at 2048"
+problem:
+  statement: "exp-02 sits at 0.58 and neither a second pass over its own corpus nor
+    continuation on rejection-sampled data moved it. 86 of 200 dev items are still
+    wrong, essentially all of them wrong numbers from well-formed reasoning, and the
+    model can already reach the right answer on 85.6% of training problems within 4
+    samples - so the capability is there and greedy decoding is not realising it."
+  evidence:
+  - path: /home/ben/task/analysis/exp-03_failure_tags.json
+    locator: "tag counts"
+    observation: "114 correct, 85 wrong_number, 1 format_no_answer_line"
+  - path: /home/ben/task/analysis/exp-03_watch_rerun.json
+    locator: "fixed/regressions"
+    observation: "9419 of 11000 training problems (85.6%) are solved by at least one
+      of k=4 samples, against 0.58 greedy on dev"
+  affected_share: 0.988
+  failure_examples:
+  - id: gsm8k_0deb5903
+    source: /home/ben/task/analysis/exp-03_failure_tags.json
+    question: "Patchy/Trixie kitten counts"
+    gold: '40'
+    model_output: "7 + 21 + 12 = 38 + 12 = 50"
+    failure: "arithmetic slip inside a sound plan"
+  - id: gsm8k_01a47d5c
+    source: /home/ben/task/analysis/exp-03_failure_tags.json
+    question: "bee hive ratios"
+    gold: '400'
+    model_output: "3x + 2y = 700 then 3x = 2y, x = 116.67, rounds down"
+    failure: "wrong equations, accepts a non-integer count"
+  - id: gsm8k_0e2125c7
+    source: /home/ben/task/analysis/exp-03_failure_tags.json
+    question: "hospital doctor pay"
+    gold: '10000'
+    model_output: "converts minutes to hours twice"
+    failure: "unit confusion compounded over many steps"
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch.jsonl
+    n: 84
+    selection: "all 84 dev-200 items exp-02 gets wrong"
+hypothesis:
+  claim: "Training the base checkpoint from scratch on the union of the reference
+    corpus and the unbiased rejection-sampled corpus (80764 rows) will score higher
+    on dev-200 than exp-02's 0.58, which was trained on the reference corpus alone."
+  mechanism: "exp-03 applied the on-policy rows as a small late perturbation to an
+    already-converged checkpoint, at lr 6e-6 over 1166 steps, and with a
+    length-biased selection. Folding the same rows into a single full-schedule run
+    from the base weights lets them shape the model from the start rather than
+    nudge it at the end, and removing the shortest-first bias stops the run from
+    also teaching shorter chains."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+1 to +5 points on dev-200"
+  falsified_if: "dev-200 accuracy at or below exp-02's 0.58"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/union_v2.jsonl
+    source: "nvidia/OpenMathInstruct-2 (gsm8k + augmented_gsm8k) + openai/gsm8k train
+      + derived:exp-02 (synthetic:self, rejection sampled)"
+    n_examples: 80764
+    built_by: /home/ben/task/scripts/rft_sample.py
+    build_command: [python, scripts/build_sft_data.py, --max-per-problem, '1', --max-omi2,
+      '56000', --out, data/sft_v2.jsonl]
+    selection: "sft_v2 (63470 rows) unchanged, plus 17294 rejection-sampled rows:
+      re-derived from data/rft_exp02.jsonl.raw.jsonl by cutting each completion at
+      the end of its first well-formed 'ANSWER: n' line, keeping those equal to
+      gold, and taking a random 2 of the distinct correct samples per problem (9419
+      problems). No shortest-first bias this time."
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, custom completion-only loss
+    peft: none
+    hyperparams: {lr: 1.0e-05, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 2048,
+      scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "grader's prompt via templates/gemma3.jinja, few-shot system
+      message on 30% of rows; target is body + blank line + 'ANSWER: <int>' +
+      <end_of_turn>; loss on target only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/union_v2.jsonl, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d,
+      --out, /home/ben/task/ckpts/exp-04, --max-seq-len, '2048', --bs, '8', --accum,
+      '4', --lr, '1e-5', --epochs, '1']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '200', --max-connections,
+      '32', --max-tokens, '1024', --gpu-memory-utilization, '0.85', --json-output-file,
+      '{out}.json']
+    dev_set: official gsm8k test, first 200 items (--limit 200)
+    n: 200
+    seed: 42
+  comparator: {ref: exp-02, value: 0.58, path: /home/ben/task/eval/exp-02_dev200.json}
+  diagnostic:
+    what: "watch-set churn: of exp-02's 84 failures how many are fixed, and how many
+      of its 116 correct items regress. exp-03's problem was 30 fixed against 32
+      broken; a real gain must show fixes clearly exceeding regressions."
+    n: 200
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.57
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+  - {path: /home/ben/task/ckpts/exp-04/final, step: 2524}
+  training_summary: {final_loss: 0.316, steps: 2524, notes: "train_runtime 5666 s, 14.3 samples/s, 45.9M tokens, 0 truncated"}
+  measurements:
+  - {metric: accuracy, value: 0.57, n: 200, path: /home/ben/task/eval/exp-04_dev200.json, delta_vs_comparator: -0.01}
+  diagnostic_result:
+    value: 0.035
+    path: /home/ben/task/analysis/exp-04_watch_rerun.json
+    notes: "fixed 30 of exp-02's 84 failures, broke 32 of its 116 correct items - the same 30/32 churn exp-03 produced, from a completely different training schedule."
+  watch_set_result: {fixed: 30, still_failing: 54, regressions: 32, path: /home/ben/task/analysis/exp-04_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: |
+    dev-200 0.580 -> 0.570 (-1.0, inside the 3.5-point stderr). Folding the rejection-sampled rows
+    into a full run from the base weights, without the shortest-first bias, reproduced exp-03's
+    result exactly: 30 fixed, 32 broken, net zero. Neither of the two candidate causes for exp-03's
+    null was the cause; the on-policy rows simply carry no capability this model does not have.
+  decision: reject
+  next_step: "exp-02 stays the incumbent. exp-02/exp-03/exp-04 are 0.580/0.570/0.570 at n=200, all inside one stderr of each other, so n=200 cannot separate them: re-measure the three at n=600 and pick on that. The 30/32 churn across two unrelated schedules also suggests these checkpoints are three samples from one accuracy plateau, which makes a weight average of two of them (exp-05) the one cheap thing left worth trying."

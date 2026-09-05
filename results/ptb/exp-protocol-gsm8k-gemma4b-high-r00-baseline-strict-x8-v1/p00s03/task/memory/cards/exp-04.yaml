@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T20:57:18Z'
+situation:
+  elapsed_h: 1.2
+  remaining_h: 8.8
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-02/final_greedy
+    score: {metric: accuracy, value: 0.674, protocol_n: 500}
+  trigger: "exp-02 used only 4 of the 32 OpenMathInstruct-2 shards (25.7k rows over ~21k unique problems) because that was what had downloaded; all 32 shards are now local and yield 70.4k unique gsm8k-derived problems, 3.3x the problem coverage, for the same pipeline."
+  trigger_evidence:
+    - {path: /home/ben/task/data/sft_v2.jsonl, locator: "89645 rows"}
+    - {path: /home/ben/task/analysis/exp-02_greedy_dev500_diag.json, locator: "graded_accuracy 0.674, non_stop_share 0.012", observation: "format is solved; the residual 33% are reasoning failures, which is what more problem coverage should attack"}
+  alternatives_rejected:
+    - {option: "Rejection-sampling (RFT) from exp-02 first", reason: "RFT is worth more when its sampler is stronger, and it is the cheap step (~1h); doing the expensive data-scale run first means RFT samples come from the better model"}
+    - {option: "3 epochs on the 25.7k corpus instead of more data", reason: "exp-02's loss was already 0.27 at 2 epochs; repeating the same 21k problems is more likely to memorise than to generalise"}
+    - {option: "Add the MATH-derived rows (augmented_math, 279k/shard)", reason: "GSM8K is grade-school arithmetic word problems and MATH answers are often non-numeric, which would fight the 'ANSWER: <int>' format; keeps this card a clean single-variable test of gsm8k-domain data scale"}
+    - {option: "Sequence packing to cut the padding waste", reason: "needs block-diagonal attention to keep completion-only loss correct; a correctness risk for a ~25% speedup, and the run fits in budget without it"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, /tmp/tp.jsonl, --output-dir, /tmp/tp, --epochs, '1', --token-budget, '32768', --max-bs, '160'], outcome: "6k rows, 5.78M tokens in 397s = 14.5k tok/s, no OOM; raising max-bs off 48 lets short rows fill the token budget"}
+    - {command: [python, train_sft.py, --data, data/sft_v2.jsonl, --output-dir, /tmp/x, --dry-run], outcome: "49.7M tokens/epoch; 2 of 89645 rows exceed max_seq_len 2816 and are dropped (0.002%)"}
+problem:
+  statement: "After exp-02 the output format is solved (non-stop 1.2%, every answer on an 'ANSWER: N' line) but a third of dev items are still answered wrong, i.e. the model reasons incorrectly rather than formats incorrectly. exp-02 saw only ~21k distinct problems."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_greedy_dev500_diag.json, locator: "whole file", observation: "0.674 on dev-500 greedy; first_answer_line_accuracy 0.676 tracks it, so essentially all remaining loss is wrong reasoning"}
+    - {path: /home/ben/task/memory/cards/exp-02.yaml, locator: "setup.data selection", observation: "14715 gsm8k-source + 11000 augmented rows drawn from 4 of 32 shards"}
+  affected_share: 0.326
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scaling the same SFT recipe from 25.7k rows over ~21k problems to 89.6k rows over 70.4k problems raises greedy dev-500 accuracy above exp-03's 0.674."
+  mechanism: "The remaining errors are reasoning errors on problem types the model has seen few or no examples of; 3.3x the distinct problems (7.4k original gsm8k-train problems at up to 4 solutions each, plus 60k distinct augmented problems) broadens coverage rather than repeating the same items."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +6 points"
+  falsified_if: "greedy dev-500 accuracy at or below 0.674, which would say gsm8k-domain data scale past ~20k problems buys nothing for a 4B model and the remaining budget should go to on-policy methods instead"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, all 32 shards, rows with problem_source in {gsm8k, augmented_gsm8k}; few-shot prefixes drawn from the openai/gsm8k TRAIN split"
+      n_examples: 89645
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v2.jsonl, --max-per-problem, '4', --max-per-problem-aug, '1', --n-gsm8k-src, '30000', --n-aug-src, '60000', --seed, '1']
+      selection: "same filters as exp-02 (integer answer, \\boxed and <<..>> stripped, answer present in the solution, 40-2600 chars); up to 4 solutions per original gsm8k-train problem (29645 rows over 7425 problems) and 1 per augmented problem (60000 rows over 60000 problems); 10% of rows get a 4-shot and 10% a 10-shot system prefix"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with liger-kernel 0.8.2 fused linear CE"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 32768, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, max_bs: 96}
+    target_format: "identical to exp-02: templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4) + inspect_evals' MATH_PROMPT_TEMPLATE; completion = solution, blank line, 'ANSWER: <int>', then <end_of_turn>; loss on the completion only. NOTE one secondary change vs exp-02: max_bs 48 -> 96, which raises the mean examples per optimizer step (~78 -> ~120) for throughput; the data scale is the intended variable."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v2.jsonl, --output-dir, /home/ben/task/ckpts/exp-04, --epochs, '2', --lr, '1e-5', --token-budget, '32768', --max-bs, '96', --grad-accum, '2', --max-seq-len, '2816', --save-steps, '380', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 380
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.1}
+evaluation:
+  protocol:
+    command: [python, eval_model.py, --model-path, '{checkpoint}_greedy', --tag, '{tag}', --limit, '500']
+    dev_set: "official inspect_evals/gsm8k test split --limit 500 (first 500 items, no shuffle), greedy decoding via generation_config.json temperature 0.0"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-03
+    value: 0.674
+    path: /home/ben/task/eval/exp-02_greedy_dev500.json
+  diagnostic:
+    what: "compare the 1-epoch checkpoint (step ~760) with the 2-epoch one under the same protocol, to separate 'more data' from 'more optimizer steps' and detect overfitting"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.95
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-760, step: 760}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1140, step: 1140}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1520, step: 1520}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1622, step: 1622}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 1622}
+  training_summary: {final_loss: 0.2947, steps: 1622, notes: "7027s wall, 14.1k tokens/s, 99.4M training tokens over 2 epochs; no loss spikes"}
+  measurements:
+    - {metric: accuracy, value: 0.728, n: 500, path: /home/ben/task/eval/exp-04_final_g500.json, delta_vs_comparator: 0.054}
+    - {metric: accuracy, value: 0.716, n: 500, path: /home/ben/task/eval/exp-04_ep1_g500.json, delta_vs_comparator: 0.042}
+  diagnostic_result:
+    value: 0.716
+    path: /home/ben/task/analysis/exp-04_ep1_g500_diag.json
+    notes: "1 epoch (step 760) 0.716 vs 2 epochs 0.728: most of the gain is already there after one pass over the larger corpus, and the second epoch adds +1.2 points, so this is data coverage rather than extra optimizer steps. No sign of overfitting at 2 epochs."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Greedy dev-500 0.674 -> 0.728 (+5.4 points) from scaling 25.7k rows / ~21k problems to 89.6k rows / 70.4k problems with the recipe otherwise unchanged. The 1-epoch checkpoint already reaches 0.716, so the gain comes from problem coverage, not from the extra steps."
+  decision: adopt
+  next_step: "The corpus is now off-policy 405B-distilled text. Next lever is on-policy: sample k=6 from this checkpoint on the same 29.4k problems, keep the chains it gets right (more of them for problems it rarely solves), and continue training on those."

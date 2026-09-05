@@ -1,0 +1,109 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T09:18:15Z'
+situation:
+  elapsed_h: 4.5
+  remaining_h: 5.5
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp02_greedy
+    score: {metric: accuracy, value: 0.72, protocol_n: 150}
+  trigger: "With format fixed (149/150) and decoding greedy, the incumbent still misses 42/150 dev items, and those are reasoning/arithmetic failures. Sampling k=4 from exp-02 over 43473 GSM8K-train-derived problems shows the headroom directly: 67.1% of samples are correct and 86.9% of problems are solved at least once, i.e. the model can already reach a correct chain on most problems it currently gets wrong at greedy - it just does not put that chain first."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/gen_rft.log, locator: "'116716 correct samples / 173892; 37780/43473 problems solved at least once'"}
+    - {path: /home/ben/task/analysis/diag_exp03_greedy_dev150.txt, locator: "accuracy 0.7200, answer_last_line 149/150"}
+  alternatives_rejected:
+    - {option: "Retrain from the base snapshot on SFT+RFT together (the RFT paper's setup)", reason: "~250k rows x 2 epochs is ~3.4h of the 5.5h left, with no fallback checkpoint if it lands short"}
+    - {option: "RFT rows only, no teacher rows", reason: "a second stage on the model's own outputs over problems it has already trained on narrows the distribution; the unseen teacher half keeps injecting new information"}
+    - {option: "Teacher rows only (161k unseen OpenMathInstruct-2 solutions are available)", reason: "more of the same off-policy signal; it does nothing about the model putting a wrong chain first at greedy, which the pass-rate evidence says is the actual failure"}
+    - {option: "More epochs on the exp-02 corpus", reason: "exp-02's loss was already flat at 0.27 by the end of epoch 2; repeating the same targets is the one thing the evidence does not support"}
+  pitfalls_hit:
+    - {what: "vLLM offline SamplingParams(stop=['<end_of_turn>']) never fires: detokenization runs with skip_special_tokens=True so the literal string never appears in the output stream. 50-61% of samples ran to max_tokens and looked like extraction failures, making the measured pass rate 0.30 instead of 0.64", cost_h: 0.3, fix: "stop_token_ids=[1, 106] instead of a string stop; verified on 600 samples, no_extract 0.508 -> 0.005"}
+    - {what: "cd into a subdirectory inside a Bash tool call persists, so the next 'awm exp_protocol check --dir .' reported 'no such card'", cost_h: 0.02, fix: "always cd back to /home/ben/task"}
+  smoke_runs:
+    - {command: [python, scripts/dbg_gen.py], outcome: "150 problems x k=4, zero-shot vs the grader's 10-shot prefix: correct 0.597 vs 0.642, no_extract 0.005 vs 0.003 - so RFT sampling uses the 10-shot prefix (higher yield, and it is the condition the grader actually scores)"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/contam_check_exp04.jsonl], outcome: "0 matches over 107301 rows, exit 0"}
+problem:
+  statement: "The incumbent misses 42/150 dev items for reasoning reasons, not formatting. Rejection sampling shows it can produce a correct chain for 86.9% of held-out-style problems within 4 samples, so for most of those 42 the correct chain exists in the model's distribution but is not the greedy one."
+  evidence:
+    - {path: /home/ben/task/logs/gen_rft.log, locator: "final [gen] line", observation: "67.1% per-sample accuracy at T=1.0 across 173892 samples; 86.9% of 43473 problems solved at least once"}
+    - {path: /home/ben/task/analysis/diag_exp03_greedy_dev150.txt, locator: "accuracy 0.7200 answer_last_line 149/150 mean_chars 575", observation: "format and termination are no longer the bottleneck"}
+  affected_share: 0.28
+  failure_examples:
+    - {id: gsm8k_fbb884c1, source: /home/ben/task/analysis/samples_exp03_greedy_dev150.json, question: "Candice starts an internship ... post-it notes ... how many were in the package she bought?", gold: "163", model_output: "declares the problem contradictory and loops for 14295 chars without terminating", failure: "greedy repetition loop after the chain goes wrong"}
+  watch_set: null
+hypothesis:
+  claim: "A second training stage from exp-02's checkpoint on 107296 new correct solution paths - 67044 self-generated and answer-verified plus 40252 previously unseen OpenMathInstruct-2 teacher solutions, over the same GSM8K-train-derived problems - raises greedy dev-150 accuracy above exp-03's 0.7200."
+  mechanism: "Every row is a correct path for a problem the model has already seen, so the update moves probability mass from wrong chains onto right ones rather than teaching new content. The RFT half is on-policy: it reweights chains the model already produces, which is what changes the argmax under greedy decoding. The teacher half is off-policy and unseen, so it keeps injecting new phrasings and prevents the second stage from collapsing onto the model's own narrow style."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-03, magnitude: "+2 to +5 pts"}
+  falsified_if: "greedy dev-150 accuracy at or below 0.7200, or format regresses (fewer than 145/150 completions ending in an 'ANSWER:' line)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_exp04.jsonl
+      source: "synthetic:self (67044 rows sampled from exp-02) mixed with nvidia/OpenMathInstruct-2 train_2M gsm8k/augmented_gsm8k rows not used in exp-02 (40252 rows)"
+      n_examples: 107296
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, scripts/gen_rft.py, --model, /home/ben/task/ckpts/exp02/final, --problems, data/rft_problems.jsonl, --out, data/rft_raw.jsonl, --k, '4', --temp, '1.0', --top-p, '0.95', --max-tokens, '512', --keep-per-problem, '2', --fewshot, '1']
+      selection: "RFT half: k=4 samples at T=1.0/top_p=0.95 under the grader's 10-shot prefix over 43473 problems (7473 openai/gsm8k TRAIN + 36000 OpenMathInstruct-2 augmented_gsm8k, all TRAIN-derived); keep only samples whose final 'ANSWER: <n>' line matches the reference answer; at most 2 per problem and only if their multiset of arithmetic expressions differs. Teacher half: solutions for the same problems whose body was not already in data/sft_exp02.jsonl, capped at 2 per problem. Then 5 rows dropped for containing 'ANSWER: ' twice and 243 for exceeding 640 completion tokens. 5% of rows carry the grader's exact 10-shot system prefix; the rest are zero-shot. Rendered through templates/gemma3.jinja (sha256 7de1c58e208eda46)."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear CE
+    peft: none
+    hyperparams: {lr: 6.0e-6, epochs: 1, batch_size: 24576, grad_accum: 4, max_seq_len: 3072, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "unchanged from exp-02: solution, blank line, 'ANSWER: <n>', then <end_of_turn>; completion-only loss. batch_size is the per-micro-batch padded TOKEN budget, not a row count."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --data, /home/ben/task/data/sft_exp04.jsonl, --model, /home/ben/task/ckpts/exp02/final, --out, /home/ben/task/ckpts/exp04, --lr, '6e-6', --epochs, '1', --accum, '4', --warmup, '0.02', --token-budget, '24576', --max-seq-len, '3072', --save-strategy, epoch, --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp04
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.3}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test, --limit 150 (first 150 items, unshuffled), 10-shot system message with fewshot_seed=42"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.72
+    path: /home/ben/task/eval/exp03_greedy_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions whose last line starts with 'ANSWER:' (the greedy repetition-loop rate must not grow)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.06
+  output_checkpoint: /home/ben/task/ckpts/exp04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp04/checkpoint-492, step: 492}
+    - {path: /home/ben/task/ckpts/exp04/final, step: 492}
+  training_summary: {final_loss: 0.2133, steps: 492, notes: "train_loss 0.2326 over 492 optimiser steps (1965 micro-batches, mean 54.6 rows); 3809s wall, 28.2 rows/s. Loss starts near exp-02's 0.27 and ends at 0.21."}
+  measurements:
+    - {metric: accuracy, value: 0.70, n: 150, path: /home/ben/task/eval/exp04_greedy_dev150.json, delta_vs_comparator: -0.02}
+  diagnostic_result: {value: 1.0, path: /home/ben/task/analysis/diag_exp04_greedy_dev150.txt, notes: "150/150 completions end with an 'ANSWER:' line and max completion length fell 14295 -> 1286 chars: the greedy repetition loop exp-03 introduced is gone. Mean completion 472 chars (exp-03: 575)."}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "Greedy dev-150 0.7200 -> 0.7000 (-2.0 pts, i.e. 3 items, against a stderr of 0.037 on each arm): the second stage did not raise accuracy. It did fix the one thing that was measurable: format 149/150 -> 150/150 and max completion 14295 -> 1286 chars, so the on-policy rows tightened termination without moving reasoning."
+  decision: iterate
+  next_step: "The two arms are statistically indistinguishable at n=150, so picking between them on this number would be picking noise. exp-05: score both checkpoints at n=500 under one protocol and take the winner for final_model."

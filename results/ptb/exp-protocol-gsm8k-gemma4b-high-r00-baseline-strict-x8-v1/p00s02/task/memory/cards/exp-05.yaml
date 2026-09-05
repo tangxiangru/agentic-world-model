@@ -1,0 +1,125 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-03T23:27:01Z'
+situation:
+  elapsed_h: 4.3
+  remaining_h: 5.7
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.74, protocol_n: 150}
+  trigger: "exp-04's probe split the two prompt shapes apart: zeroshot_greedy 0.857 (best of any checkpoint) but fewshot_greedy 0.700 with 19.3% of generations hitting the token cap. The better solver is being wrecked by the 2044-token 10-shot prefix the grader always prepends, and every training row it ever saw was zero-shot."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-04_probe.json, locator: "summary.zeroshot_greedy vs summary.fewshot_greedy", observation: "0.857 (0% truncated) vs 0.700 (19.3% truncated) on the same 300 problems and the same weights"}
+    - {path: /home/ben/task/analysis/exp-04_diag.json, locator: "stop", observation: "the official eval reproduces it: 28 of 150 samples stopped on max_tokens, against 0 of 150 for exp-03"}
+  alternatives_rejected:
+    - {option: "Ship exp-03 and stop", reason: "exp-04 is 4 points better zero-shot; the gap is a prompt-robustness defect with an obvious repair, and there is time for one more training run"}
+    - {option: "Repair with decode instead (repetition_penalty, or T=0.3)", reason: "a repetition penalty over a chain of arithmetic penalises legitimately repeated numbers, and raising temperature gives back the 11 points exp-03 won by going greedy; the defect is in the weights, so fix it there"}
+    - {option: "Retrain from base on the 151.9k rows with prefixes mixed in", reason: "~3 h, and only 5.7 h remain including final evaluation and packaging; continuing exp-04 costs 45 min and tests the same mechanism"}
+    - {option: "Use the eval's exact 10-shot prefix on every mixed row", reason: "would teach one memorised context rather than robustness to long prefixes, and at 2044 tokens a row it is the most expensive option; a 2-10 shot distribution covers the eval's shape as one draw among many"}
+  pitfalls_hit:
+    - {what: "Launched a second evaluate.py while the first was still holding the GPU; it died on 'Free memory ... less than desired GPU memory utilization' and its nohup redirect overwrote the first run's log", cost_h: 0.05, fix: "read the score from eval/*.json and the inspect log by mtime, and check nvidia-smi before launching"}
+    - {what: "Launched exp-05 at batch 4 x 2816 tokens and it OOMed on the second optimizer step, again inside cross_entropy (9.2 GiB fp32 logit tensor on top of the 39 GiB fp32-master state). The first step survived because group_by_length front-loads one long batch and the allocator still had room.", cost_h: 0.1, fix: "batch 2 x grad_accum 32 (effective batch unchanged at 64); relocked"}
+    - {what: "exp-05 died 30 min in, at its first checkpoint save: the greedy generation_config.json written into the PARENT checkpoint (do_sample false with temperature 0.0 and top_k 0) is what vLLM needs but transformers' GenerationConfig.save_pretrained rejects it as invalid, so save_pretrained raised and killed the run.", cost_h: 0.55, fix: "train_sft.py now installs a valid GenerationConfig on the model before training and set_decode.py is applied only after the checkpoint is written; the parent's config was reset to the base sampling values; relocked"}
+    - {what: "str.splitlines() split JSON rows on \\x0c/\\x85 inside solution text, corrupting ~1 row in 15k of a shuffled subset", cost_h: 0.1, fix: "split on '\\n' explicitly when re-shuffling jsonl"}
+  smoke_runs: []
+problem:
+  statement: "exp-04 is prompt-brittle. Trained for a full epoch on 151.6k rows whose prompts are all zero-shot, it loops under greedy decoding when the grader's 10-shot, 2044-token prefix is in context: 19.3% of probe generations and 28 of 150 official-eval generations never emit <end_of_turn> and are truncated at the token cap, so the grader reads a junk number. The same weights, prompted zero-shot, are the strongest solver measured so far (0.857 on probe-300)."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-04_probe.json, locator: "summary.fewshot_greedy.truncated", observation: "0.193 truncated few-shot vs 0.000 zero-shot"}
+    - {path: /home/ben/task/analysis/exp-02_probe.json, locator: "summary.fewshot_greedy.truncated", observation: "exp-02, trained on 46% as much data, truncates on only 0.7% few-shot - the brittleness grew with training on zero-shot-only prompts"}
+    - {path: /home/ben/task/eval/exp04_dev150.json, locator: accuracy, observation: "0.6333 against exp-03's 0.7400 despite the better solver"}
+  affected_share: 0.193
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_gsm8ktrain300.jsonl
+    n: 300
+    selection: "the same 300 held-out GSM8K TRAIN problems used since exp-02; the benchmark test split is never read"
+hypothesis:
+  claim: "Continuing exp-04 for one epoch over 20k rows in which 35% of prompts carry a 2-10 shot GSM8K-TRAIN prefix in the grader's few-shot shape cuts the few-shot truncation rate and raises official-protocol accuracy above exp-03's 0.74."
+  mechanism: "The loop is a prompt-distribution failure, not a reasoning failure: after a long block of worked examples the model has never been supervised on where its own answer ends, so greedy decoding continues into the pattern of the prefix. Supervising the same targets behind prefixes of varying length teaches the boundary in exactly that context, while 65% zero-shot rows preserve exp-04's zero-shot ability."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+2 to +8 points; the ceiling is exp-04's zero-shot level (0.857 on probe) transferred to the few-shot prompt"
+  falsified_if: "probe-300 fewshot_greedy truncation stays above 0.05, or official-protocol accuracy is at or below exp-03's 0.74."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix20k.jsonl
+      source: derived:exp-04 (a 20k re-shuffle of the exp-04 training file, nvidia/OpenMathInstruct-2@469216e3 train_1M, gsm8k-sourced only)
+      n_examples: 20000
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --n, '200000', --max-per-problem, '4', --out, /home/ben/task/data/sft_omi2_gsm8k_big.jsonl]
+      selection: "20000 rows sampled (seed 99) from the 151867-row exp-04 file, which already excludes the probe problems. At training time train_sft.py prepends, with probability 0.35 and seed 0, one of 256 few-shot prefixes drawn from data/fewshot_prefixes.json."
+      contamination_check: passed
+      mixture_weight: 1.0
+    - path: /home/ben/task/data/fewshot_prefixes.json
+      source: openai/gsm8k split train
+      n_examples: 256
+      built_by: /home/ben/task/build_probe.py
+      build_command: [python, -c, "see the prefix builder in the exp-05 launch notes"]
+      selection: "256 prefixes, each 2-10 problems sampled (seed 11) from the GSM8K TRAIN split excluding the 300 probe problems, rendered in inspect's exact few-shot shape '{question}\\n\\nReasoning:\\n{reasoning}\\n\\nANSWER: {target}' joined by blank lines - the same string inspect builds for its system message. The benchmark test split is never read."
+      contamination_check: not_run
+      mixture_weight: 0.35
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom completion-only collator
+    peft: none
+    hyperparams: {lr: 7.0e-6, epochs: 1.0, batch_size: 2, grad_accum: 32, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32-master+bf16-autocast/adamw_bnb_8bit/beta2=0.98, seed: 0}
+    target_format: "unchanged: <bos><start_of_turn>user\\n[{few-shot prefix}\\n\\n]{MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {n}<end_of_turn>\\n. The prefix sits inside the first user turn, which is exactly where templates/gemma3.jinja puts inspect's system message. Loss on the model turn only."
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_mix20k.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --out, /home/ben/task/ckpts/exp-05, --lr, '7e-6', --epochs, '1', --bs, '2', --grad-accum, '32', --max-seq-len, '2816', --master-fp32, --fewshot-prob, '0.35', --save-steps, '250']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints: {every_steps: 250, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.74
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: "probe-300 fewshot_greedy truncation rate (must fall from 0.193 toward exp-02's 0.007) together with zeroshot_greedy accuracy (must not fall far below exp-04's 0.857) - the pair separates 'fixed the loop' from 'traded away the solver'"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.01
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 313}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-313, step: 313}
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-250, step: 250}
+  training_summary: {final_loss: 0.2163, steps: 313, notes: "train_loss 0.2105 over 1 epoch of 19997 rows (3 dropped for len>2816); 3628 s wall; 35% of prompts carried a 2-10 shot prefix"}
+  measurements:
+    - {metric: accuracy, value: 0.77333, n: 150, path: /home/ben/task/eval/exp05_dev150.json, delta_vs_comparator: 0.03333}
+  diagnostic_result:
+    value: 0.8867
+    path: /home/ben/task/analysis/exp-05_probe.json
+    notes: "The brittleness is gone. probe-300 fewshot_greedy truncation 0.193 -> 0.000 and accuracy 0.700 -> 0.887; zeroshot_greedy 0.857 -> 0.883, so nothing was traded away - the few-shot prompt is now marginally the better one. The official eval agrees: 1 of 150 samples truncated, against 28 of 150 for exp-04."
+  watch_set_result: {fixed: 56, still_failing: 34, regressions: 0, path: /home/ben/task/analysis/exp-05_probe.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Official protocol 0.7400 (exp-03) -> 0.7733 with exp-04's better solver now usable: probe few-shot truncation fell 0.193 -> 0.000 and few-shot accuracy 0.700 -> 0.887. The defect was prompt-distribution, not reasoning, exactly as the mechanism said."
+  decision: adopt
+  next_step: "exp-06: the repair phase saw only 20k rows against exp-04's 151k zero-shot rows, so the prefix-mixed distribution is still under-trained. Continue exp-05 on a fresh, disjoint 20k rows under the same 35% prefix mixture."

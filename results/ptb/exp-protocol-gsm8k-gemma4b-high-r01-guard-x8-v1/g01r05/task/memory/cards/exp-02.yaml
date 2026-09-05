@@ -1,0 +1,134 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T18:54:53Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.45
+  remaining_h: 9.55
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.055, protocol_n: 200}
+  trigger: "exp-01: the base model scores 0.055 at n=200 and 41% of its completions hit the 4000-token cap without ever emitting a stop token; scoring its first 'ANSWER:' line instead gives only 0.095, so both stopping and reasoning need work."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "share_hit_max_tokens=0.41, first_ANSWER_line_accuracy=0.095"}
+    - {path: /home/ben/task/eval/exp-01_base_n200.json, locator: "accuracy=0.055"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full fine-tuning", reason: "the base model must learn a new turn format and stopping behaviour from scratch, which full FT does more reliably; memory stopped being the constraint after the Liger fused-linear-CE patch (49 GiB at bs=48)"}
+    - {option: "Train on MetaMathQA instead", reason: "OpenMathInstruct-2's GSM8K-family split is larger and from a stronger teacher; MetaMathQA is downloaded and kept as a fallback source"}
+    - {option: "Include the MATH-derived half of OpenMathInstruct-2", reason: "the benchmark is grade-school word problems; LaTeX-heavy MATH solutions would spend the token budget on a different style, and wall-clock is the binding constraint"}
+    - {option: "Train only on the 7.5k original GSM8K train solutions", reason: "too few and too terse to move a 4B model far; used as a 2x-weighted style anchor inside the mixture instead"}
+  pitfalls_hit:
+    - {what: "fp32 model at bs>=24 OOMed materialising the 262k-vocab logits tensor (29.8 GiB for one forward)", cost_h: 0.15, fix: "installed liger-kernel 0.8.2, apply_liger_kernel_to_gemma3(fused_linear_cross_entropy=True): peak 49 GiB at bs=48, 20.5 samples/s"}
+    - {what: "bf16 model weights OOMed too at bs=32, and bf16 master weights would round away lr=1e-5 updates (5e-4 relative vs bf16's ~2e-3 resolution)", cost_h: 0.1, fix: "keep fp32 master weights with bf16 autocast and use adamw_bnb_8bit to pay for the optimizer state"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --model, "<base>", --data, data/sft_v1.jsonl, --out, /tmp/smoke1, --limit, "400", --max-steps, "3"], outcome: "ran end to end; grader-template check passed; loss 0.574; saved /tmp/smoke1/final"}
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --max-steps, "10", --bs, "96"], outcome: "22.4 samples/s at 77.2 GiB peak - too close to the cap for a 2.7 h run with variable-length rows; bs=32 chosen instead"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/sft_v2_forcheck.jsonl], outcome: "95642 documents scanned, 0 contaminated, exit 0"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The base model does not stop after answering: it continues the few-shot pattern with invented problems until the token cap, so the grader's last-numeric-token rule reads a number out of the hallucinated tail. Underneath that, its unaided step-by-step accuracy is also low (0.095 by first-ANSWER-line scoring)."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "share_hit_max_tokens", observation: "0.41 of 200 completions never emitted a stop token"}
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "first_ANSWER_line_accuracy vs official_accuracy", observation: "0.095 vs 0.055: roughly 40% of the scored errors are stopping/format rather than arithmetic"}
+  affected_share: 0.41
+  failure_examples:
+    - {id: gsm8k_013c2fba, source: /home/ben/task/analysis/exp-01_failures.jsonl, question: "(text not reproduced - benchmark test item, rule 7)", gold: "(withheld)", model_output: "answers the asked question, then emits two further invented problems each ending 'ANSWER: <n>'", failure: "no stop token; grader reads the last invented problem's number"}
+    - {id: gsm8k_010d0010, source: /home/ben/task/analysis/exp-01_failures.jsonl, question: "(text not reproduced - benchmark test item, rule 7)", gold: "(withheld)", model_output: "'ANSWER: <<>>' followed by a bullet line", failure: "degenerate output echoing the calculator-annotation syntax visible in the few-shot prefix"}
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_failures.jsonl
+    n: 189
+    selection: "the item ids of every dev-200 item the base model got wrong in exp-01; ids only, no benchmark text stored (rule 7)"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Full-parameter SFT on 95.6k GSM8K-style chain-of-thought targets, rendered with the grader's own gemma3.jinja template and each ending in <end_of_turn> after a single 'ANSWER: N' line, raises GSM8K accuracy at n=200 against the base model's 0.055."
+  mechanism: "Two deficits are addressed at once. Every target terminates with the token vLLM stops on, which removes the hallucinated tail the last-numeric-token grader currently reads. And 81k OpenMathInstruct-2 solutions from a much stronger teacher supply the step-by-step arithmetic the base model does not produce unaided."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+40 to +65 points; the stopping fix alone should recover the gap between 0.055 and the 0.095 first-ANSWER-line figure, and the teacher data should carry it well beyond that"
+  falsified_if: "accuracy at n=200 is below 0.40, or more than 5% of completions still fail to emit a stop token before the 4000-token cap"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 @469216e3f46f4dacf476b382e192485ea51a143e (train_1M, problem_source in {gsm8k, augmented_gsm8k}) + openai/gsm8k @740312add88f781978c0658806c59bc2815b9866 main/train"
+      n_examples: 95642
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --out, data/sft_v2.jsonl, --max-per-problem, "1", --gsm8k-train-repeat, "2"]
+      selection: "one solution per unique problem; boxed answers unwrapped; rows already containing 'answer:' or '####' dropped so the marker stays unique; numeric answers only; completion <= 3500 chars; original GSM8K train solutions (calculator annotations stripped) at weight 2 as a style anchor; 7651 rows (8%) have their user turn prefixed with k in {1,2,4} solved GSM8K-train examples in inspect_evals' exact sample_to_fewshot format, so the model also sees the few-shot shape the grader always uses"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused linear cross entropy"
+    peft: "none (full fine-tune of the 3.88B text tower; the 420M vision tower and multimodal projector are frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 32, grad_accum: 4, max_seq_len: 2048, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights, bf16 autocast, adamw_bnb_8bit, beta2=0.95", seed: 0}
+    target_format: "<bos><start_of_turn>user\\n{grader prompt}<end_of_turn>\\n<start_of_turn>model\\n{CoT}\\n\\nANSWER: {N}<end_of_turn>\\n - loss on the model turn only, prompt tokens masked to -100; rows over max_seq_len are dropped, never truncated"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-02, --max-seq-len, "2048", --lr, "1e-5", --epochs, "2", --bs, "32", --grad-accum, "4", --save-steps, "500", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-02_train.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 500
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 2.8}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "200", --max-connections, "16", --gpu-memory-utilization, "0.85"]
+    dev_set: "official --limit 200 (first 200 items of openai/gsm8k main test in inspect-ai's default order)"
+    n: 200
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.055
+    path: /home/ben/task/eval/exp-01_base_n200.json
+  diagnostic:
+    what: "share of completions that emit a stop token before the 4000-token cap (1 - share_hit_max_tokens); base model = 0.59"
+    n: 200
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 2.1
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1496}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1000, step: 1000}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-500, step: 500}
+  training_summary: {final_loss: 0.1717, steps: 1496, notes: "train_loss 0.268 over 2 epochs, 25.3 samples/s, peak 67.8 GiB; grad_norm stayed near 1.0 throughout, no spikes"}
+  measurements:
+    - {metric: accuracy, value: 0.71, n: 200, path: /home/ben/task/eval/exp-02_n200.json, delta_vs_comparator: 0.655}
+  diagnostic_result:
+    value: 0.99
+    path: /home/ben/task/analysis/exp-02_report.json
+    notes: "0.99 of completions stop before the 4000-token cap (base 0.59) and 0.99 contain the ANSWER marker. first-ANSWER-line accuracy 0.705 vs official 0.710 - the two now agree, i.e. essentially no score is being lost to a hallucinated tail. vLLM confirmed it read the greedy generation_config ('Default sampling parameters have been overridden' in logs/exp-02_eval.log)."
+  watch_set_result: {fixed: 132, still_failing: 57, regressions: 1, path: /home/ben/task/analysis/exp-02_report.json}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "GSM8K at n=200 went 0.055 -> 0.710 (+65.5), inside the predicted +40..+65 band. Both halves of the mechanism check out: stop compliance 0.59 -> 0.99, and the gap between official scoring and first-ANSWER-line scoring closed from 4.0 points to -0.5, so what remains is arithmetic/reasoning error rather than format."
+  decision: adopt
+  next_step: "exp-03: rejection-sampling fine-tune from this checkpoint on its own correct solutions to GSM8K-train and OpenMathInstruct-2 augmented-GSM8K questions, which targets the residual 29% now that format is no longer the bottleneck."

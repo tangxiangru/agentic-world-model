@@ -1,0 +1,118 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T19:26:37Z'
+situation:
+  elapsed_h: 0.25
+  remaining_h: 9.75
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.04667, protocol_n: 150}
+  trigger: "exp-01 diagnostic: 80% of base-model generations contain a well-formed 'ANSWER: n' line but only 4.7% score, because 51% run to the 4000-token cap without emitting <end_of_turn> and the grader reads the last numeric token."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "format_compliance=0.8, stop.max_tokens=76 of 150", observation: "termination failure, not arithmetic failure"}
+    - {path: /home/ben/task/eval/base_dev150.json, locator: accuracy, observation: "0.04667 under the official protocol n=150"}
+  alternatives_rejected:
+    - {option: "Prompt-side fix only (a decode-config card adding stop strings)", reason: "evaluate.py and templates/ are immutable and the grader owns the sampling params, so there is nowhere to inject a stop string; it would also leave reasoning quality untouched"}
+    - {option: "Train on GSM8K train's own human CoT (7473 rows)", reason: "same problems the eval's 10-shot prefix already shows, terse and low-signal; OpenMathInstruct-2 supplies ~150k higher-quality solutions to the same train problems"}
+    - {option: "LoRA instead of full fine-tune", reason: "a smoke run showed full FT of the 3.88B language stack runs at 1.37 s/step on the H100 with memory to spare, so LoRA would only cost quality"}
+    - {option: "Train with the eval's 10-shot prefix inside the prompt", reason: "the prefix is 2044 tokens, ~15x the cost per row; measure first whether the zero-shot/few-shot mismatch costs anything"}
+  pitfalls_hit:
+    - {what: "inspect writes its json log into ./logs, the same directory used for run logs", cost_h: 0.0, fix: "read the eval json by glob rather than by an assumed name"}
+    - {what: "contamination_check.py reads only one text field per jsonl line, so a prompt+completion file is half-checked", cost_h: 0.05, fix: "materialised data/decon_input.jsonl with prompt+completion concatenated into 'text'"}
+    - {what: "First launch OOMed at step 0 inside cross_entropy: Gemma3's vocab is 262144, so an fp32 logit tensor for batch 16 x 1024 tokens is 17 GiB on top of a 39 GiB fp32-master optimizer state. The 12-step smoke run never hit it because group_by_length put only short batches first.", cost_h: 0.1, fix: "batch 8 x grad_accum 8 (same effective 64), max_seq_len 896 (p99 is 650), PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True; relocked"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/smoke.jsonl, --out, ckpts/smoke_bf16, --max-steps, '12', --bs, '16', --grad-accum, '2'], outcome: "12 steps in 19.6 s (1.25 s/step, bf16 params), loss 0.44 -> 0.42, no OOM"}
+    - {command: [python, train_sft.py, --data, data/smoke.jsonl, --out, ckpts/smoke_fp32, --max-steps, '12', --bs, '16', --grad-accum, '2', --master-fp32], outcome: "1.37 s/step with fp32 master weights + bf16 autocast, only 10% slower than pure bf16, so fp32 master is affordable"}
+    - {command: [python, render_check.py], outcome: "grader prompt is 2183 tokens (10-shot); template sha256 7de1c58e...; a training row ends ['2','<end_of_turn>'] = id 106, which generation_config lists as eos"}
+problem:
+  statement: "The base model does not terminate. It produces a plausible chain of thought and an 'ANSWER: n' line, then keeps generating past it (invented follow-up problems, repeated ANSWER lines, token degeneration), so inspect's match(numeric=True, location='end') reads a trailing junk number instead of the answer. 76 of 150 samples hit the 4000-token cap."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "whole file", observation: "accuracy 0.0467, format_compliance 0.80, stop_reason=max_tokens on 76/150"}
+    - {path: /home/ben/task/logs/2026-09-03T19-17-45+00-00_gsm8k_7uxHtbbJZ2TU2To3ckdARk.json, locator: "samples[0].output.choices[0].message.content", observation: "the model emits the gold answer in a correct ANSWER line, then continues into unrelated text; the scored answer is a later junk number"}
+  affected_share: 0.51
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_gsm8ktrain300.jsonl
+    n: 300
+    selection: "300 problems sampled (seed 1234) from the GSM8K TRAIN split and removed from the training file by verbatim match (268 rows dropped). The benchmark test split is never read. Scored offline with the grader's prompt and the grader's last-numeric-token rule."
+hypothesis:
+  claim: "Completion-only SFT on 69.7k GSM8K-derived OpenMathInstruct-2 solutions, every target terminated with <end_of_turn> (id 106, listed as eos in generation_config), raises official-protocol accuracy far above the base model's 0.0467, mainly by converting already-correct-but-buried answers into scored ones."
+  mechanism: "The model already reaches a correctly formatted answer 80% of the time; what it lacks is termination and a consistent solution format. Supervising the target boundary teaches it to stop, and 405B-generated solutions to GSM8K TRAIN problems additionally sharpen the arithmetic chain."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+40 to +60 points on the official n=150 protocol; once termination is fixed the ceiling is set by reasoning quality"
+  falsified_if: "Official-protocol accuracy stays below 0.35, or the probe still shows the model failing to terminate (truncated share > 0.10)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_omi2_gsm8k_clean.jsonl
+      source: nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e split train_1M
+      n_examples: 69732
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --n, '70000']
+      selection: "problem_source in {gsm8k, augmented_gsm8k} only (both derived from the GSM8K TRAIN split); numeric expected_answer; solution <= 3000 chars; at most 2 solutions per problem; \\boxed{} unwrapped; '<<>>' calculator markup stripped; final line rewritten to 'ANSWER: <n>' and verified to be the last numeric token; 'ANSWER:' appears exactly once; target terminated with <end_of_turn>. build_probe.py then removed 268 rows containing a held-out probe problem verbatim."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer with a custom completion-only collator
+    peft: none
+    hyperparams: {lr: 1.5e-5, epochs: 1.0, batch_size: 8, grad_accum: 8, max_seq_len: 896, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: fp32-master+bf16-autocast/adamw_bnb_8bit/beta2=0.98, seed: 0}
+    target_format: "<bos><start_of_turn>user\\n{MATH_PROMPT_TEMPLATE with the problem}<end_of_turn>\\n<start_of_turn>model\\n{chain of thought}\\n\\nANSWER: {n}<end_of_turn>\\n - byte-identical to templates/gemma3.jinja (sha256 7de1c58e...), loss on the model turn only"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/sft_omi2_gsm8k_clean.jsonl, --out, /home/ben/task/ckpts/exp-02, --lr, '1.5e-5', --epochs, '1', --bs, '8', --grad-accum, '8', --max-seq-len, '896', --master-fp32, --save-steps, '545']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints: {every_steps: 545, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.9}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.04667
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "probe_eval.py over the 300 held-out GSM8K TRAIN problems: accuracy, format_compliance and truncated share (generations hitting the token cap instead of emitting <end_of_turn>). The truncated share is the direct test of the termination mechanism."
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.02
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1088}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-1088, step: 1088}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-545, step: 545}
+  training_summary: {final_loss: 0.2451, steps: 1088, notes: "train_loss 0.2878 over 1 epoch of 69686 rows (46 dropped for len>896); 3679 s wall; grad_norm settled near 1.0"}
+  measurements:
+    - {metric: accuracy, value: 0.62667, n: 150, path: /home/ben/task/eval/exp02_dev150.json, delta_vs_comparator: 0.58}
+  diagnostic_result:
+    value: 0.8167
+    path: /home/ben/task/analysis/exp-02_probe.json
+    notes: "Termination is fixed: truncated share 0.000 zero-shot / 0.007 few-shot (was 0.51 for the base model) and format_compliance 1.00 / 0.99. Probe-300 accuracy by configuration: zeroshot_greedy 0.817, fewshot_greedy 0.800, zeroshot_sampled 0.747, fewshot_sampled 0.700. Two separable effects: the eval's 10-shot prefix costs ~1.7 points, and the sampling the grader inherits from generation_config (do_sample, top_k 64, top_p 0.95, T=1.0) costs ~10 points against greedy. Probe absolute numbers run high because the probe problems come from the GSM8K TRAIN split whose augmented variants are in the training mix; use it for deltas, not for level."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-02_probe.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Official protocol 0.0467 -> 0.6267 (+58.0 points, n=150). The mechanism was the one predicted: the base model's 51% truncation rate went to ~0% and format compliance to 100%, so answers the model was already producing now get read by the grader."
+  decision: adopt
+  next_step: "exp-03: the probe shows the grader's inherited sampling costs ~10 points against greedy decoding. generation_config.json ships with the checkpoint and vLLM logs that it overrides its defaults from it, so setting greedy there is a model-side change worth testing on the official protocol."
