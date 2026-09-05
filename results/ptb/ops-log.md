@@ -249,3 +249,6 @@
 - 2026-09-05T18:27:53+00:00 submit exp-protocol-opus48-humaneval-none-a-x2-v1 (held): 2 job(s) 93139,93140 -> results/ptb/exp-protocol-opus48-humaneval-none-a-x2-v1/formal-2026-09-05T182709.835487+0000.json
 - 2026-09-05T18:27:53+00:00 submit exp-protocol-opus48-humaneval-knowledge-a-x2-v1 (held): 2 job(s) 93141,93142 -> results/ptb/exp-protocol-opus48-humaneval-knowledge-a-x2-v1/formal-2026-09-05T182731.731057+0000.json
 - 2026-09-05T18:27:53+00:00 submit exp-protocol-opus48-humaneval-e-repair-a-x2-v1 (held): 2 job(s) 93143,93144 -> results/ptb/exp-protocol-opus48-humaneval-e-repair-a-x2-v1/formal-2026-09-05T182753.449124+0000.json
+- 2026-09-05T18:28:41+00:00 release exp-protocol-opus48-humaneval-none-a-x2-v1: 2 held job(s) 93139,93140
+- 2026-09-05T18:28:41+00:00 release exp-protocol-opus48-humaneval-knowledge-a-x2-v1: 2 held job(s) 93141,93142
+- 2026-09-05T18:28:42+00:00 release exp-protocol-opus48-humaneval-e-repair-a-x2-v1: 2 held job(s) 93143,93144
