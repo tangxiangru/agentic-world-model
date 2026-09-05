@@ -229,3 +229,5 @@
 - 2026-09-05T12:12:39+00:00 harvest exp-protocol-opus48-gsm8k-tools-x4-v1/e03g02 job=92134 COMPLETED acc=0.5428 complete general_anomaly
 - 2026-09-05T12:12:43+00:00 harvest exp-protocol-opus48-gsm8k-tools-x4-v1/e03g03 job=92135 COMPLETED acc=0.4276 complete clean
 - 2026-09-05T12:12:46+00:00 harvest exp-protocol-opus48-gsm8k-tools-x4-v1/e03g04 job=92136 COMPLETED acc=0.5830 complete clean
+- 2026-09-05T15:15:17+00:00 release exp-protocol-opus48-gsm8k-knowledge-x4-v1: 4 held job(s) 92129,92130,92131,92132
+- 2026-09-05T15:15:17+00:00 release exp-protocol-opus48-gsm8k-guard-x4-v1: 4 held job(s) 92137,92138,92139,92140
