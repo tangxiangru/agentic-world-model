@@ -14,7 +14,7 @@
 ## 二、四种文件就是协议
 
 1. **manifest** `experiments/posttrainbench/<batch>.yaml`:跑什么。提交后不可变;发射器把顶层 commit、PTB commit 与 manifest 冻结进 receipt。每格若用 `_awm` scaffold,`awm` 块写明要挂进沙箱的 commit、路径与 `awm sandbox setup` 的参数。
-2. **队列** `experiments/posttrainbench/queue.yaml`:期望状态。有序列表,每项 `manifest`、`want: submitted | cancelled`、可选 `pilot: first`、一句 `why`。加一项等于提交;改成 `cancelled` 等于撤回还没开跑的格。这是规划者唯一的操作杆。
+2. **队列** `experiments/posttrainbench/queue.yaml`:期望状态。有序列表,每项 `manifest`、`want: submitted | held | cancelled`、可选 `pilot: first`、一句 `why`。`held` 只提交并登记 ownership，保留 `PENDING(JobHeldUser)`；改成 `submitted` 前必须通过 ownership 与冻结节点 release gate；`cancelled` 撤回还没开跑的格。这是规划者唯一的操作杆。只有用户明确授权时，单个 `want: submitted` 项可带 `release_override: {allow_shared_reservation: true, authorized_by, authorized_at, reason}`：它只豁免 reservation 节点集合相等检查，ownership、receipt frozen nodes、逐 job `PENDING(JobHeldUser)` 与 `ReqNodeList` 仍强制，授权与实际 reservation/frozen nodes 写回 receipt；绝不能设成全局环境开关。
 3. **receipt** `results/ptb/<batch>/<kind>-<ts>.json`:发射器写在 `data/ptb/batches/` 的原件由操作员复制进来,取消记录追加在 `cancellations`。它是唯一的归属凭证:**只有它列出的 job ID 可以被取消**,这是 `AGENTS.md` 的硬规则。
 4. **结果包** `results/ptb/<batch>/<cell>/`,布局见 `results/ptb/README.md`;`results/ptb/ops-log.md` 每个动作一行。
 
@@ -51,7 +51,11 @@ git add experiments doc skills awm && git commit && git push
 
 ## 五、超额与额度
 
-设这条线的 GPU 额度为 G。规划者保证队列里排队的格数不少于 G,低了就补。第一版不硬控并发,交给 Slurm;发现挤占别的线,再改成操作员只放行 G 个 held job。
+设这条线的 GPU 额度为 G，用户指定 held pending floor 为 8。规划者保证至少 8 个独立、已冻结且
+科学上需要的格处于 `PENDING(JobHeldUser)`；低了先补 held receipt。held 不因 `OWNERSHIP FAIL` 自动
+release。Release 前重新验证 ownership、hold reason 与 receipt 的冻结 `ReqNodeList`；原生子队列
+隔离未恢复时保持 held。发现错误终结照常收割，再按有效重复数和 matched-arm 平衡决定是否用新
+immutable manifest 补跑。
 
 ## 六、集群上的一次性准备
 

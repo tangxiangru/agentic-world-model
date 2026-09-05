@@ -1,0 +1,102 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T23:03:54Z'
+situation:
+  elapsed_h: 0.9
+  remaining_h: 9.5
+  incumbent:
+    ref: exp-01
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0667, protocol_n: 150}
+  trigger: "Base model scores only 0.0667 at n=150 (exp-01); it rambles and rarely leaves a clean final number in the grader's ANSWER: format."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: "accuracy 0.0667 n=150"}
+  alternatives_rejected:
+    - {option: "Full fine-tuning of the 4B multimodal model", reason: "higher OOM/instability risk on the multimodal wrapper; LoRA+merge is robust and merges to a standard loadable model. Reserve full-FT for a later card if LoRA underperforms."}
+    - {option: "Add external math datasets (MetaMathQA etc.)", reason: "contamination risk vs GSM8K test; start with the clean GSM8K train split (0 contaminated docs)."}
+  pitfalls_hit:
+    - {what: "template appends '<end_of_turn>\\n'; naive target ended on newline (107) not EOT (106)", cost_h: 0.1, fix: "trim trailing newline so supervised target ends exactly at EOT 106"}
+  smoke_runs:
+    - {command: [python, -c, "cpu prefix+EOT check over all 7473 rows"], outcome: "0 prefix violations, maxlen 552 tokens, EOT present"}
+problem:
+  statement: "The base model is not tuned to the GSM8K grader format: it does not reliably produce concise chain-of-thought ending in 'ANSWER: <number>' then stop, so the last-number scorer rarely reads a correct answer."
+  evidence:
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: "accuracy 0.0667", observation: "base model near floor under 10-shot grader"}
+  affected_share: 0.93
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "LoRA SFT on the GSM8K train split, reformatted to the grader's ANSWER: format and terminated with <end_of_turn>, will raise GSM8K accuracy at n=150 well above the base 0.0667."
+  mechanism: "SFT teaches concise correct chains of thought in the exact output format the last-number scorer reads, and a clean stop token, converting reasoning ability the base model already has into gradable answers."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: "+40 pts or more (target region 0.45-0.70)"
+  falsified_if: "n=150 accuracy is not clearly above exp-01 (<=0.15), or targets fail to end at EOT and the model does not stop."
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: local
+      n_examples: 7473
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py, data/gsm8k_train.jsonl]
+      selection: "GSM8K train split; strip <<calc>> annotations; replace '#### N' with 'ANSWER: N'; keep numeric finals only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer + peft 0.18.1 LoRA"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=language_model q,k,v,o,gate,up,down"
+    hyperparams: {lr: 2.0e-4, epochs: 3, batch_size: 16, grad_accum: 2, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought then 'ANSWER: <int>' then <end_of_turn> (completion-only loss; prompt masked)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --data, /home/ben/task/data/gsm8k_train.jsonl, --out, /home/ben/task/ckpts/exp-02/merged, --epochs, "3", --lr, "2e-4", --bs, "16", --grad-accum, "2", --max-seq-len, "1024", --lora-r, "64", --lora-alpha, "128", --seed, "0"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.0
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/merged, --limit, "150", --json-output-file, /home/ben/task/eval/exp-02_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.0667
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic: null
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/ckpts/exp-02/merged
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/merged, step: 700}
+  training_summary: {final_loss: 0.365, steps: 702, notes: "3 epochs, LoRA r=64; train_runtime 1177s; targets end at EOT 106 (analysis/rendered_example.txt)"}
+  measurements:
+    - {metric: accuracy, value: 0.38, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.3133}
+  diagnostic_result: {value: null, path: null, notes: "of 93 wrong: 19 correct-then-continued (model answered right then invented a new problem, last-number scorer read the wrong tail), 74 genuine reasoning/arith errors, 33 samples had >1 ANSWER block. Ceiling if stopping fixed ~0.507."}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: "LoRA SFT on GSM8K-train in the ANSWER: format lifts n=150 accuracy 0.0667 -> 0.38 (+31.3). Format is learned (all outputs have ANSWER:, greedy decode, 144/150 stop cleanly), but under the 10-shot eval context the 0-shot-trained model often answers correctly then continues inventing problems (19 losses), and 74 are genuine reasoning errors."
+  decision: adopt
+  next_step: "exp-03: few-shot-aware SFT (train prompts mirror the eval's multi-shot structure) to teach answer-once-and-stop; then consider RFT/full-FT for the 74 genuine reasoning errors."
+

@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T11:20:00Z'
+situation:
+  elapsed_h: 3.85
+  remaining_h: 6.15
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/greedy
+    score: {metric: accuracy, value: 0.4667, protocol_n: 150}
+  trigger: "Under greedy decoding exp-04's weights still leave 3/150 official completions unterminated and 27/150 without a clean 'ANSWER: <number>' final line, and 22/300 probe completions run past 768 tokens. exp-02, trained only on gsm8k's own terse chains, had 0/150 and 3/150. The mixture bought reasoning and paid for it in discipline."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_format.json, locator: "clean_answer_line=0.82, nonstop=3", observation: "greedy, so this is the model's own behaviour, not the decoder's"}
+    - {path: /home/ben/task/eval/exp-04_probe300.json, locator: "22 samples with finished!=stop; 229/300 clean answer lines", observation: "7% of held-out probes never terminate under greedy; every one of those is a guaranteed miss"}
+    - {path: /home/ben/task/eval/exp-02_probe300.json, locator: "298/300 finish=stop, 297/300 clean", observation: "the gsm8k-only model had no such problem, so this is a property the mixture introduced"}
+  alternatives_rejected:
+    - {option: "A second epoch on the same 213885-row mixture", reason: "~2.4h of a 6.15h budget for maybe +1-3 pts, and it would reinforce exactly the long-solution habit that is costing terminations"}
+    - {option: "Go back to exp-02 and accept the lower reasoning", reason: "greedy probe300 says exp-04 is +3.3 pts over exp-02 (0.4733 vs 0.4400) and fixes 53 items exp-02 misses; the discipline problem is narrower than the reasoning gap"}
+    - {option: "Filter the mixture for short solutions and retrain from base", reason: "same cost as a fresh epoch, and it throws away the multi-step solutions that are the reason the mixture helped at all"}
+    - {option: "DPO on terminated vs unterminated pairs", reason: "no preference pairs exist yet and building them costs as much as the RFT round, which fixes the same failure with a simpler objective"}
+  pitfalls_hit:
+    - {what: "RFT sampling with the harness's 10-shot prompt is memory-bound: 2154-token prompts cut vLLM concurrency to 8.8 prompts/s, a 2h job", cost_h: 0.1, fix: "sample with the zero-shot prompt the model was SFT'd on (30-50 prompts/s, 22 min); the completion is what is being harvested, and the model's training condition is zero-shot anyway"}
+    - {what: "comparing exp-04 to exp-02 across different decode settings gave contradictory answers (official 0.400 vs greedy probe 0.4733)", cost_h: 0.2, fix: "exp-05 pinned decoding to greedy for every checkpoint from here on; all comparisons are now greedy-to-greedy"}
+  smoke_runs:
+    - {command: [python, scripts/rft_sample.py, --model-path, /home/ben/task/ckpts/exp-04/final, --questions, data/rft_questions.jsonl, --k, '4', --fewshot, '1'], outcome: "killed after 5 min: with the 2154-token 10-shot prompt vLLM managed 8.8 prompts/s (2h for 63892 generations). Re-run at --fewshot 0 - the prompt the model was actually SFT'd on - gave 30-50 prompts/s and finished in 22 min."}
+    - {command: [python, scripts/rft_sample.py, --model-path, /home/ben/task/ckpts/exp-04/final, --questions, data/rft_questions.jsonl, --k, '4', --temperature, '1.0', --fewshot, '0'], outcome: "13509/15973 questions solved at least once (84.6%), mean 2.22 correct of 4, 2464 unsolved; 23155 rows kept after dedup and the 2-shortest-per-question cap"}
+problem:
+  statement: "exp-04 does not reliably stop. Under greedy decoding 7% of held-out probes and 2% of official items run past the token limit without emitting <end_of_turn>, and 18% of official completions do not end in a clean 'ANSWER: <number>' line. Those completions are scored on whatever number happens to be last, so they are near-certain misses regardless of whether the reasoning was right."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_format.json, locator: "nonstop=3, clean_answer_line=0.82 of 150, greedy", observation: "27 of 150 official completions have no clean final answer line"}
+    - {path: /home/ben/task/eval/exp-04_probe300.json, locator: "22 of 300 finished != stop", observation: "7.3% of probes never terminate under greedy at max_tokens=768"}
+    - {path: /home/ben/task/analysis/exp-04_watch.json, locator: "fixed=53, regressions=43, still_failing=115", observation: "against exp-02 the mixture fixes 53 probe items and breaks 43; the breakage is what this card targets"}
+  affected_share: 0.18
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "first 300 of the last 500 GSM8K *train* items (indices 6973-7272), held out from every training file. Not the benchmark test set."
+hypothesis:
+  claim: "Rejection-sampling fine-tuning of exp-04 on its own correct, terminated samples raises greedy probe300 accuracy above exp-04's 0.4733 and cuts the share of unterminated probe completions below 22/300."
+  mechanism: "Every RFT row is a completion this model actually produced, kept only if it stopped on <end_of_turn>, contained exactly one 'ANSWER: ' marker, and got the right number. Training on that set is a direct vote for the terminated, single-answer-line mode of its own distribution and against the rambling mode, and because the kept samples are also correct, it sharpens reasoning at the same time rather than trading one for the other. Preferring the shortest correct sample per question pushes further in the same direction."
+  falsified_if: "greedy probe300 accuracy is at or below exp-04's 0.4733, or unterminated probe completions are not fewer than 22/300"
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +6 pts"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_rft.jsonl
+      source: "synthetic:self - exp-04 sampling 4 completions per question at temperature 1.0 / top_p 0.95 for the 15973 questions in data/rft_questions.jsonl (6973 gsm8k train items + 9000 OpenMathInstruct-2 gsm8k/augmented_gsm8k problems), mixed with the 6973 original gsm8k train rows"
+      n_examples: 29740
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, scripts/rft_sample.py, --model-path, /home/ben/task/ckpts/exp-04/final, --questions, data/rft_questions.jsonl, --k, '4', --temperature, '1.0', --max-per-question, '2', --out, data/rft_raw.jsonl]
+      selection: "keep a sample only if finish_reason==stop AND it contains exactly one 'ANSWER: ' AND its last number equals gold under the harness's own scorer AND the final line matches 'ANSWER: <number>'; then dedup by normalised text and keep the 2 shortest per question"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer, completion-only loss, token-budget micro-batches (scripts/train_sft3.py)"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 7.0e-06, epochs: 2, batch_size: 12288, grad_accum: 3, max_seq_len: 1024, scheduler: cosine_with_min_lr_0.1, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-04: prompt = templates/gemma3.jinja render of [user: MATH_PROMPT_TEMPLATE(question)]; target = the model's own chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>. batch_size is padded TOKENS per micro-batch."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft3.py, --model, /home/ben/task/ckpts/exp-04/final, --data, data/sft_rft.jsonl, --out, /home/ben/task/ckpts/exp-06, --lr, '7e-6', --epochs, '2', --max-tokens-per-batch, '12288', --max-rows-per-batch, '64', --grad-accum, '3', --max-seq-len, '1024', --warmup, '0.03']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft3.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.4
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-05
+    value: 0.4667
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "greedy probe300 accuracy and the count of probe completions with finish_reason != stop (exp-04: 0.4733 and 22/300)"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.9
+  output_checkpoint: /home/ben/task/ckpts/exp-06/greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 544}
+    - {path: /home/ben/task/ckpts/exp-06/greedy, step: 544}
+  training_summary: {final_loss: 0.2386, steps: 544, notes: "1944s wall, 30.6 samples/s; 22767 self-generated rows plus the 6973 original gsm8k rows"}
+  measurements:
+    - {metric: accuracy, value: 0.4733, n: 150, path: /home/ben/task/eval/exp-06_dev150.json, delta_vs_comparator: 0.0066}
+  diagnostic_result:
+    value: 0.4867
+    path: /home/ben/task/eval/exp-06_probe300.json
+    notes: "greedy few-shot probe300 0.4867 vs exp-04's 0.4733. Unterminated probe completions 22/300 -> 11/300 and clean answer lines 229/300 -> 244/300, so the discipline the card targeted did improve. On the official 150, unterminated 3 -> 1. Watch set vs exp-04: 27 fixed, 23 regressed, 131 still failing."
+  watch_set_result: {fixed: 27, still_failing: 131, regressions: 23, path: /home/ben/task/analysis/exp-06_watch.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "RFT on exp-04's own correct terminated samples moves the official protocol 0.4667 -> 0.4733 and the greedy few-shot probe 0.4733 -> 0.4867, and halves non-termination (22/300 -> 11/300, official 3 -> 1). Both stated conditions are met, but the effect is small - because, as the follow-up probe showed, non-termination was not the main thing the few-shot context was doing to this model."
+  decision: adopt
+  next_step: "exp-07. Probing the same weights WITHOUT the harness's 10-shot system message gives 0.7033 against 0.4867 with it. 53/300 few-shot completions answer correctly and then invent a new problem, which the last-number scorer then grades. The fix is to train with the demo block in context, which no run in this session has done."

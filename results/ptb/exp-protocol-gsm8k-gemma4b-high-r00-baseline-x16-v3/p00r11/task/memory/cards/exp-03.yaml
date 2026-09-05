@@ -1,0 +1,125 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T01:04:10Z'
+situation:
+  elapsed_h: 3.6
+  remaining_h: 6.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.62, protocol_n: 150}
+  trigger: "exp-02 fixed the answer contract completely (well-formed-and-stopped 0.17 -> 1.00) but all 57 remaining dev-150 failures are wrong derivations: dropped terms, answering a different quantity than the one asked, arithmetic slips (analysis/exp-02_dev150_failures.json)."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev150_summary.json, locator: "accuracy=0.62, well_formed_and_stopped=1.0, failures_not_well_formed=0"}
+    - {path: /home/ben/task/analysis/exp-02_dev150_failures.json, locator: "gsm8k_0deb5903, gsm8k_0f53259b, gsm8k_18abb77f"}
+  alternatives_rejected:
+    - {option: "More OpenMathInstruct-2 distillation data", reason: "the gsm8k-family pool holds only ~85k unique problems and exp-02 already used 80k of them; extra rows would be extra solutions to problems already seen, not new coverage (logs/build_omi_v2.log)"}
+    - {option: "DPO on correct-vs-incorrect self-samples", reason: "the sampling pass produces both, so this stays open for exp-04, but RFT is the cheaper first cut and does not need a reference-model forward pass"}
+    - {option: "Train longer / more epochs on sft_v1", reason: "loss was already 0.28 and still falling slowly at the end of epoch 2; more epochs on the same targets risks memorising them rather than fixing derivations"}
+    - {option: "Self-consistency / majority voting at inference", reason: "evaluate.py takes a single sample per item and is immutable; any gain has to be inside the weights"}
+  pitfalls_hit:
+    - {what: "exp-02's save_total_limit=2 deleted the epoch-1 checkpoint, so the 1-vs-2-epoch comparison promised by 'keep: all' was lost", cost_h: 0.0, fix: "added --save-total-limit to train_sft.py and set it to 4 here"}
+    - {what: "first RFT sampling pass ran 22 min and then died in norm_answer with OverflowError converting a 30-digit sampled 'answer' to int; all generations were in memory only and were lost", cost_h: 0.4, fix: "norm_answer rejects >24-char numbers and catches OverflowError; rft_sample.py now streams every generation to <out>.raw before filtering"}
+    - {what: "vLLM's offline entrypoint did not stop on <end_of_turn> even though generation_config lists eos [1,106]; the model re-emitted the ANSWER line to max_tokens and the first smoke run measured a bogus 0.14 sample accuracy", cost_h: 0.2, fix: "SamplingParams(stop_token_ids=[1,106]); sample accuracy went 0.14 -> 0.66 on the same 100 questions"}
+  smoke_runs:
+    - {command: [python, rft_sample.py, --model, ckpts/exp-02/final, --n-questions, '100', --k, '4', --gsm8k-only], outcome: "sample accuracy 0.66 at temperature 1.0, pass@4 0.91, 123 rows from 100 questions; 5/400 samples lacked an ANSWER line"}
+problem:
+  statement: "exp-02 solves 62% of dev-150; the residual 38% are reasoning failures -- the model writes a fluent, well-formed derivation that drops a quantity, answers the wrong question, or slips on arithmetic. Its own sampling shows the ability is partly there but unreliable: at temperature 1.0 it gets 66% of individual samples right but 91% of questions right in at least one of four."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev150_summary.json, locator: "n_failures=57, failures_not_well_formed=0", observation: "every failure is a reasoning error, none is a format error"}
+    - {path: /home/ben/task/analysis/exp-02_dev150_failures.json, locator: "gsm8k_0deb5903", observation: "sums 7+12+36=55 for a problem whose gold is 40: invents a term"}
+    - {path: /home/ben/task/analysis/exp-02_dev150_failures.json, locator: "gsm8k_0f53259b", observation: "computes both quantities correctly then reports the wrong one (21 instead of 45)"}
+    - {path: /home/ben/task/analysis/rft_v1_stats.json, locator: "pass_at_k vs sample_accuracy", observation: "the 25-point gap between pass@4 and per-sample accuracy is the reliability headroom RFT converts into greedy accuracy"}
+  affected_share: 0.38
+  failure_examples:
+    - {id: gsm8k_0deb5903, source: /home/ben/task/analysis/exp-02_dev150_failures.json, question: "(dev-150 item, text in the failures file)", gold: "40", model_output: "Trixie's cat litter has 12 kittens. Patchy's cats has 3*12=36 kittens. So in total ... 7+12+36=55. ANSWER: 55", failure: "misreads the relations between the three cats and adds a spurious term"}
+    - {id: gsm8k_0f53259b, source: /home/ben/task/analysis/exp-02_dev150_failures.json, question: "(dev-150 item, text in the failures file)", gold: "45", model_output: "Beatrice ate 48 ... Marcell ate 42 ... he ate 42/2 = 21 roll-ups on average. ANSWER: 21", failure: "answers a quantity the question did not ask for"}
+    - {id: gsm8k_18abb77f, source: /home/ben/task/analysis/exp-02_dev150_failures.json, question: "(dev-150 item, text in the failures file)", gold: "60", model_output: "16 + 8 + 4 + 2 = 30 sq ft ... 30/4 = 7.5. ANSWER: 7.5", failure: "arithmetic slip (16+8+4+2=30) and wrong halving direction"}
+    - {id: gsm8k_0d8bb8d9, source: /home/ben/task/analysis/exp-02_dev150_failures.json, question: "(dev-150 item, text in the failures file)", gold: "50", model_output: "3x = 100 ... which is not possible since the number must be an integer ... 3x = 90 and x = 30. ANSWER: 30", failure: "notices the contradiction, then fabricates a new equation instead of rechecking the setup"}
+  watch_set: null
+hypothesis:
+  claim: "Continuing training of exp-02/final on its own temperature-1.0 samples that are verified correct against gold answers (rejection-sampling fine-tuning, ~2 kept per question, one per question where all four samples were already right) raises dev-150 accuracy above exp-02's 0.62."
+  mechanism: "The model's pass@4 (0.91 on gsm8k-train questions) far exceeds its per-sample accuracy (0.66): correct derivations are already in its distribution but under-weighted. Training on verified-correct self-samples raises the probability of exactly those trajectories, which is what greedy decoding at eval time reads out. Sampling from the model itself also avoids the distribution shift of another model's phrasing, and dropping to one sample for questions solved 4/4 keeps the corpus tilted toward the questions where reliability is actually missing."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points on dev-150"
+  falsified_if: "dev-150 accuracy at or below exp-02's 0.62 for both saved checkpoints"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/rft_v1.jsonl
+      source: synthetic:self
+      n_examples: 22474
+      built_by: /home/ben/task/rft_sample.py
+      build_command: [python, rft_sample.py, --model, /home/ben/task/ckpts/exp-02/final, --out, /home/ben/task/data/rft_v1.jsonl, --stats-out, /home/ben/task/analysis/rft_v1_stats.json, --n-questions, '18000', --k, '4', --temperature, '1.0', --max-keep-per-question, '2']
+      selection: "18000 questions (7473 gsm8k TRAIN + the rest OpenMathInstruct-2 gsm8k-family problems, no test item); 4 samples each at temperature 1.0 top_p 0.95, stop_token_ids [1,106]; keep only samples whose final 'ANSWER: N' equals the gold answer; drop exact duplicates; keep the 2 shortest correct samples per question, or 1 if all 4 were correct"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: transformers 4.57.3 Trainer subclass (completion-only masking + chunked cross-entropy, sdpa)
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 2, batch_size: 32, grad_accum: 1, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "chain of thought, blank line, 'ANSWER: <number>' as the last line, then <end_of_turn>; loss on the model turn only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, /home/ben/task/data/rft_v1.jsonl, --out, /home/ben/task/ckpts/exp-03, --lr, '5e-6', --epochs, '2', --bs, '32', --grad-accum, '1', --max-seq-len, '1536', --save-steps, '702', --save-total-limit, '4']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 702
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.0
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}.json', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150 (first 150 items of openai/gsm8k test in harness order)
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.62
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "well-formed-and-stopped share must stay at 1.0 (RFT must not break the answer contract exp-02 bought)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.42
+  output_checkpoint: /home/ben/task/ckpts/exp-03/checkpoint-702
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-702, step: 702}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1404, step: 1404}
+    - {path: /home/ben/task/ckpts/exp-03/checkpoint-1406, step: 1406}
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1406}
+  training_summary: {final_loss: 0.213, steps: 1406, notes: "1519 s, 29.6 samples/s; sampling pass measured 0.7135 per-sample accuracy and 0.9105 pass@4 over 18000 questions (analysis/rft_v1_stats.json), 22474 rows kept"}
+  measurements:
+    - {metric: accuracy, value: 0.6867, n: 150, path: /home/ben/task/eval/exp-03_ep1_dev150.json, delta_vs_comparator: 0.0667}
+    - {metric: accuracy, value: 0.66, n: 150, path: /home/ben/task/eval/exp-03_dev150.json, delta_vs_comparator: 0.04}
+  diagnostic_result:
+    value: 0.993
+    path: /home/ben/task/analysis/exp-03_dev150_summary.json
+    notes: "the answer contract survives RFT: 149/150 completions well-formed and stopped at epoch 2 (1 completion ran long); outputs got shorter, median 354 -> 311 chars"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "RFT on 22474 verified self-samples moved dev-150 from 0.620 to 0.687 after one epoch (+6.7) and 0.660 after two (+4.0), so one epoch is the better setting and the second epoch costs accuracy back. The reliability gap the mechanism targets was real: per-sample 0.71 vs pass@4 0.91."
+  decision: adopt
+  next_step: "exp-04: same recipe, ~2.7x the RFT corpus - sample 30000 questions the round-1 pass never saw, using the 0.687 checkpoint as the sampler, and train one epoch from exp-02/final on the union. Both deltas here are inside one standard error (0.038), so the winner also needs a larger-n eval before it is called final."

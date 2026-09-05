@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T08:15:00Z'
+situation:
+  elapsed_h: 1.1
+  remaining_h: 8.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.4667, protocol_n: 150}
+  trigger: "exp-01 showed the base model's 0.040 is almost entirely a formatting failure (29/150 clean answer lines, 77/150 unterminated). exp-02 fixes the format with 6973 gsm8k rows, but 6973 in-distribution problems is a very small SFT corpus for a 3.9B model; the remaining headroom is reasoning quality, which needs problem and solution diversity that gsm8k's train split alone cannot supply."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_format.json, locator: "clean_answer_line=0.193, nonstop=77", observation: "base failures are format, not arithmetic; once format is fixed the ceiling is reasoning"}
+    - {path: /home/ben/task/data/sft_mix.jsonl, locator: "213885 rows, Counter({metamath: 112111, augmented_gsm8k: 73430, gsm8k: 28344})", observation: "31x more supervision than exp-02, all derived from the GSM8K *train* split and MATH train; 0 contaminated documents against test_data.json (analysis/contam_mix.txt)"}
+  alternatives_rejected:
+    - {option: "Continue training exp-02 on the mixture instead of restarting from base", reason: "the mixture already contains the 6973 gsm8k rows three times over; restarting from base avoids two cosine schedules stacked on one another and keeps the card's parent unambiguous"}
+    - {option: "One epoch only", reason: "cheaper, but two epochs is the standard setting for corpora of this size and a checkpoint is saved at the one-epoch mark, so both are measurable for the price of the longer run"}
+    - {option: "Add MATH / competition problems to the mixture", reason: "the benchmark is grade-school word problems; MATH-style algebra spends capacity on a distribution the grader never asks about. augmented_gsm8k already supplies harder variants of the right kind."}
+    - {option: "Train with the eval's 10-shot system message in the rows", reason: "+2044 prompt tokens per row, roughly 7x the cost; exp-02's probe will say whether the zero-shot-trained model is hurt by the few-shot context before paying for it"}
+  pitfalls_hit:
+    - {what: "the preflight stop_token/answer_marker checks read the 'answer' field of my rows (the bare gold number) and failed, because the stop token was appended by the trainer rather than present in the data", cost_h: 0.15, fix: "renamed the fields to completion/gold and moved <end_of_turn> into the data file itself, so the file now literally contains what the trainer computes loss on and the check reads the real target"}
+    - {what: "running my probe eval and evaluate.py at the same time killed both: vLLM's gpu_memory_utilization is a fraction of *total* GPU memory, so the second server found no room for KV cache and the first died with it", cost_h: 0.1, fix: "one vLLM server at a time; evals are serialised from here on"}
+    - {what: "at per-device batch 8 the H100 is overhead-bound on 300-token rows: 1.65 s per optimizer step = ~5.3k tokens/s", cost_h: 0.0, fix: "train_sft2.py: batch 32, length-bucketed batches, tokenisation done once up front"}
+  smoke_runs:
+    - {command: [python, scripts/train_sft2.py, --model, base_gemma3_pt, --data, data/sft_mix.jsonl, --out, /tmp/x, --max-seq-len, '1024', --dry-run], outcome: "213735/213885 rows kept (0.070% dropped for exceeding max_seq_len); token len p50=320 p99=648 max=1023; row 0's loss region ends 'ANSWER: 1200000<end_of_turn>'"}
+problem:
+  statement: "After exp-02 the model answers in the right format, but it has only ever been supervised on 6973 grade-school problems written in one style, with terse chains of thought that skip intermediate steps. Problems phrased differently from gsm8k's train split, and problems needing more than three or four steps, have almost no support in that corpus."
+  evidence:
+    - {path: /home/ben/task/data/sft_gsm8k.jsonl, locator: "6973 rows", observation: "exp-02's entire supervision; median target 274 tokens including the prompt, chains average 3 lines"}
+    - {path: /home/ben/task/analysis/exp-01_format.json, locator: "whole file", observation: "format was 81% of the base model's failures, so what remains after exp-02 is reasoning quality"}
+    - {path: /home/ben/task/eval/exp-02_probe300.json, locator: "summary.accuracy=0.44; 297/300 clean answer lines, 298/300 finish=stop", observation: "exp-02 scores 0.4667 official / 0.440 probe with formatting essentially perfect, so the 0.53 that remains wrong is reasoning, not presentation"}
+  affected_share: 0.56
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "first 300 of the last 500 GSM8K *train* items (indices 6973-7272), held out from every training file. Not the benchmark test set."
+hypothesis:
+  claim: "Training the base checkpoint on a 213885-row mixture of gsm8k train (x3), OpenMathInstruct-2's gsm8k/augmented_gsm8k solutions and MetaMathQA's GSM rewrites, all rendered in the grader's format, raises accuracy on the official --limit 150 protocol above exp-02's gsm8k-only score."
+  mechanism: "Format is already solved by exp-02, so extra data can only buy reasoning. The mixture supplies three things gsm8k's train split lacks: 73k harder augmented variants of the same problem type, 112k paraphrases and backward-reasoning rewrites that decouple the answer from surface phrasing, and step-by-step solutions that spell out intermediate arithmetic instead of compressing it."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+8 to +20 pts"
+  falsified_if: "accuracy on the official --limit 150 protocol is at or below exp-02's, or the probe300 diagnostic does not improve on exp-02's"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/base_gemma3_pt
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix.jsonl
+      source: "openai/gsm8k main/train[0:6973] x3 + nivdia/OpenMathInstruct-2 train_1M filtered to problem_source in {gsm8k, augmented_gsm8k} + meta-math/MetaMathQA type startswith GSM. All three are derived from GSM8K's *train* split; none touches the test split."
+      n_examples: 213885
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python, scripts/build_data.py, --out, data/pool_omi2.jsonl, --gsm8k, '0', --omi2, '220000']
+      selection: "dedup by problem text within each source; numeric final answers only; \\boxed{} unwrapped; 'The answer is: X' and gsm8k's '#### N' tails stripped; every row must end with exactly one 'ANSWER: <gold><end_of_turn>'"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, completion-only loss, length-bucketed batches (scripts/train_sft2.py)"
+    peft: "none (full fine-tune of the 3.9B language model; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 1.0e-05, epochs: 2, batch_size: 32, grad_accum: 2, max_seq_len: 1024, scheduler: cosine_with_min_lr_0.1, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "prompt = templates/gemma3.jinja render of [user: MATH_PROMPT_TEMPLATE(question)] with add_generation_prompt; target = chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft2.py, --model, base_gemma3_pt, --data, data/sft_mix.jsonl, --out, /home/ben/task/ckpts/exp-03, --lr, '1e-5', --epochs, '2', --bs, '32', --grad-accum, '2', --max-seq-len, '1024', --save-steps, '1670']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft2.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: 1670
+    keep: all
+  budget:
+    gpu: H100-80GB
+    planned_h: 2.2
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.4667
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "probe300 (held-out GSM8K train tail) accuracy, greedy, same prompt as the harness"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: failed
+  wall_h: 0.06
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: 4, notes: "died at step 4 of 6680"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: "torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.84 GiB. GPU 0 has a total capacity of 79.19 GiB of which 11.74 GiB is free. Including non-PyTorch memory, this process has 67.44 GiB memory in use. Of the allocated memory 56.48 GiB is allocated by PyTorch. -- The 16.84 GiB single allocation is the logits tensor: gemma-3's vocabulary is 262144, so one micro-batch of 32 x 1024 tokens needs 32*1024*262144*2 bytes = 16.8 GiB in bf16 and twice that again for the fp32 cross-entropy upcast. Memory here is driven by tokens-per-micro-batch, not rows-per-micro-batch, and a fixed row count over a length-bucketed corpus puts the 1000-token buckets 3x over budget."
+
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "The run never trained: batch 32 x up-to-1024 tokens OOMs on the logits tensor because gemma-3 has a 262k vocabulary. Nothing was learned about the mixture hypothesis, only about the batching."
+  decision: iterate
+  next_step: "exp-04: same data, same hypothesis, but batch by token budget instead of row count so peak memory is constant across length buckets."

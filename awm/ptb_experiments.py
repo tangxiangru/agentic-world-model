@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from awm import paths
+from awm import paths, ptb_environment
 
 PTB_ROOT = paths.REPO_ROOT / "third_party" / "PostTrainBench"
 SUBMIT = PTB_ROOT / "src" / "commit_utils" / "slurm" / "submit.sh"
@@ -32,19 +32,27 @@ APPROVED_BASE_MODELS = (
     "HuggingFaceTB/SmolLM3-3B-Base",
     "google/gemma-3-4b-pt",
 )
-APPROVED_TASKS = ("gsm8k", "aime2025")
+APPROVED_TASKS = ("gsm8k", "aime2025", "humaneval")  # HumanEval also requires receipt-bound admission.
 APPROVED_AGENT_SETUPS = (
     ("claude_vertex_max", "claude-opus-5[1m]", "max", 1_000_000),
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
     ("claude_vertex_high", "claude-opus-5[1m]", "high", 1_000_000),
     ("claude_vertex_max_200k", "claude-opus-5", "max", 200_000),
-    # claude_vertex_max plus a read-only checkout of this repository at AWM_MOUNT and
-    # `awm sandbox setup` before the prompt; the cell's `awm` block says what it ships.
+    # The matching Vertex profile plus a read-only checkout of this repository at
+    # AWM_MOUNT and `awm sandbox setup` before the prompt; the cell's `awm` block
+    # says what it ships.
     ("claude_vertex_max_awm", "claude-opus-5[1m]", "max", 1_000_000),
+    ("claude_vertex_high_awm", "claude-opus-5[1m]", "high", 1_000_000),
+    # User-approved cross-benchmark study; actual pinned CLI/provider context
+    # is independently checked by the manifest's immutable validation record.
+    ("claude_vertex_high", "claude-opus-4-8[1m]", "high", 1_000_000),
+    ("claude_vertex_high_awm", "claude-opus-4-8[1m]", "high", 1_000_000),
 )
 
 #: Where an `_awm` scaffold expects the checkout inside the sandbox.
 AWM_MOUNT = "/home/ben/awm"
+#: The tree whose id names a protocol variant (`awm.protocol_tree` in a manifest cell).
+PROTOCOL_TREE_PATH = "skills/exp_protocol"
 #: Trees a scientist must never see; no `awm.paths` entry may ship or contain them.
 #: Listing a parent (`awm`, `skills`) is rejected too, so a study ships subtrees by name.
 AWM_FORBIDDEN_TREES = (
@@ -123,6 +131,13 @@ def _check_awm_path(cell_id: str, path: str) -> None:
             )
 
 
+def _ships_protocol(shipped: list[str] | tuple[str, ...]) -> bool:
+    return any(
+        path == PROTOCOL_TREE_PATH or path.startswith(PROTOCOL_TREE_PATH + "/")
+        for path in shipped
+    )
+
+
 def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
     """An `_awm` scaffold needs to be told what to ship; any other scaffold would ignore it."""
     wants = str(agent).endswith("_awm")
@@ -160,6 +175,17 @@ def _validate_awm_block(cell_id: str, agent: Any, block: Any) -> None:
         raise ExperimentError(
             f"cell {cell_id}: awm.setup must be one line of arguments for `awm sandbox setup`"
         )
+    tree = block.get("protocol_tree")
+    if not _ships_protocol(shipped) and tree is not None:
+        raise ExperimentError(
+            f"cell {cell_id}: awm.protocol_tree was declared but awm.paths does not ship "
+            f"{PROTOCOL_TREE_PATH}"
+        )
+    if tree is not None and not re.fullmatch(r"[0-9a-f]{40}", str(tree)):
+        raise ExperimentError(
+            f"cell {cell_id}: awm.protocol_tree must be the full git tree id of "
+            f"skills/exp_protocol at awm.sha (git rev-parse <sha>:skills/exp_protocol), not {tree!r}"
+        )
 
 
 def _git_has_commit(sha: str) -> bool:
@@ -191,7 +217,41 @@ def _awm_issues(cell_id: str, block: dict[str, Any]) -> list[str]:
         ).stdout.strip()
         if not listed:
             issues.append(f"cell {cell_id}: awm path {path!r} does not exist at commit {sha[:12]}")
+    declared = block.get("protocol_tree")
+    if _ships_protocol(block.get("paths") or []) and not declared:
+        issues.append(
+            f"cell {cell_id}: awm.protocol_tree must declare the full git tree id of "
+            f"{PROTOCOL_TREE_PATH} at awm.sha"
+        )
+    if declared:
+        actual = protocol_tree_at(sha)
+        if actual != declared:
+            issues.append(
+                f"cell {cell_id}: skills/exp_protocol at commit {sha[:12]} is tree "
+                f"{(actual or 'absent')[:12]}, not the declared protocol_tree {str(declared)[:12]}"
+            )
     return issues
+
+
+def protocol_tree_at(sha: str) -> str | None:
+    """The git tree id of ``skills/exp_protocol`` at ``sha``: the protocol variant's identity.
+
+    A manifest names the commit it ships (which must carry the CLI and the
+    setup step) and, separately, the protocol tree it means to test; two
+    commits with the same tree are the same variant, and a commit whose tree
+    differs from the declared one is a different variant, whatever its
+    message says.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{sha}:{PROTOCOL_TREE_PATH}"],
+        cwd=paths.REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 
 
 def _tree_digest(root: Path) -> str:
@@ -218,6 +278,7 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
     key = hashlib.sha256("\n".join(shipped).encode()).hexdigest()[:12]
     target = root / f"{sha}-{key}"
     marker_name = ".awm-checkout.json"
+    expected_protocol_tree = protocol_tree_at(sha) if _ships_protocol(shipped) else None
 
     def _existing() -> dict[str, Any] | None:
         marker = target / marker_name
@@ -227,14 +288,54 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
             info = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        if info.get("sha") == sha and info.get("paths") == list(shipped) and info.get("complete"):
-            return {"sha": sha, "paths": list(shipped), "dir": str(target), "digest": info["digest"]}
-        return None
+        if not (
+            info.get("sha") == sha and info.get("paths") == list(shipped) and info.get("complete")
+        ):
+            return None
+        if "protocol_tree" not in info and expected_protocol_tree is not None:
+            # The bytes are fixed by (sha, paths); only the marker is behind (an older
+            # launcher wrote it without the tree). Upgrade the marker in place: a running
+            # cell may have this directory bind-mounted, and replacing it under that
+            # mount leaves the scientist with a stale file handle (pilot 90462, 2026-09-02).
+            info["protocol_tree"] = expected_protocol_tree
+            info["marker_upgraded_at"] = datetime.now(timezone.utc).isoformat()
+            marker.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+        elif info.get("protocol_tree") != expected_protocol_tree:
+            raise ExperimentError(
+                f"checkout {target} is complete but its marker has protocol_tree "
+                f"{info.get('protocol_tree')!r}, expected {expected_protocol_tree!r}; "
+                "refusing to rewrite a corrupt marker for a directory a running cell may be using"
+            )
+        return {
+            "sha": sha,
+            "paths": list(shipped),
+            "dir": str(target),
+            "digest": info["digest"],
+            "protocol_tree": info.get("protocol_tree"),
+        }
 
     if (found := _existing()) is not None:
         return found
     if target.exists():
-        shutil.rmtree(target)  # a stale or half-written directory
+        # Only a half-written directory is ever removed: one without a complete marker.
+        # A complete checkout is never deleted here, whatever its marker says, because a
+        # cell may be running on it; (sha, paths) name the directory, so a complete marker
+        # that disagrees with them is corruption to investigate, not to overwrite.
+        marker = target / marker_name
+        if marker.is_file():
+            try:
+                info = json.loads(marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ExperimentError(
+                    f"checkout {target} has an unreadable marker; refusing to replace a "
+                    "directory a running cell may be using"
+                ) from exc
+            if info.get("complete"):
+                raise ExperimentError(
+                    f"checkout {target} is complete but its marker names a different commit or "
+                    "paths; refusing to replace a directory a running cell may be using"
+                )
+        shutil.rmtree(target)  # half-written; never bound into a sandbox
     if not _git_has_commit(sha):
         raise ExperimentError(f"awm commit {sha} is not in this repository; git fetch origin first")
     archive = subprocess.run(
@@ -259,10 +360,12 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
             if (staging / tree).exists():
                 raise ExperimentError(f"archive of {sha[:12]} contains {tree}; refusing to ship it")
         digest = _tree_digest(staging)
+        protocol_tree = expected_protocol_tree
         marker = {
             "sha": sha,
             "paths": list(shipped),
             "digest": digest,
+            "protocol_tree": protocol_tree,
             "complete": True,
             "materialized_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -277,7 +380,13 @@ def materialize_awm_checkout(sha: str, shipped: list[str]) -> dict[str, Any]:
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return {"sha": sha, "paths": list(shipped), "dir": str(target), "digest": digest}
+    return {
+        "sha": sha,
+        "paths": list(shipped),
+        "dir": str(target),
+        "digest": digest,
+        "protocol_tree": protocol_tree,
+    }
 
 
 def _batch_tasks(contract: dict[str, Any]) -> tuple[str, ...]:
@@ -360,8 +469,20 @@ def validate_manifest(data: dict[str, Any]) -> None:
         raise ExperimentError("ownership.branch must be a non-empty Slurm-safe branch name")
     if not spec.startswith("doc/spec/") or not (paths.REPO_ROOT / spec).is_file():
         raise ExperimentError("ownership.spec must name an existing committed spec under doc/spec")
+    try:
+        ptb_environment.validate_operation(data)
+        ptb_environment.requested_nodes(data)
+    except ptb_environment.EnvironmentError as exc:
+        raise ExperimentError(str(exc)) from exc
     contract = data.get("contract") or {}
     tasks = _batch_tasks(contract)
+    if "humaneval" in tasks:
+        try:
+            if set(tasks) != {"humaneval"}:
+                raise ptb_environment.EnvironmentError("HumanEval uses a separate admitted task batch")
+            ptb_environment.validate_admission_reference(data)
+        except ptb_environment.EnvironmentError as exc:
+            raise ExperimentError(str(exc)) from exc
     expected = {
         "agent_budget_hours": 10,
         "gpus": 1,
@@ -530,7 +651,10 @@ def build_launches(
     if cell_ids:
         selected = [_cell(data, cell_id) for cell_id in cell_ids]
     hours = data["pilot"]["agent_budget_hours"] if pilot else contract["agent_budget_hours"]
-    run_purpose = purpose or (f"pilot-{hours}h" if pilot else "formal")
+    operation = ptb_environment.is_operation(data)
+    if operation and (pilot or purpose not in (None, ptb_environment.KIND)):
+        raise ExperimentError("environment acceptance cannot become a pilot, retry or context smoke")
+    run_purpose = ptb_environment.KIND if operation else purpose or (f"pilot-{hours}h" if pilot else "formal")
     launches = []
     for cell in selected:
         branch, job_name, experiment_name = _run_identity(data, cell["id"], run_purpose)
@@ -558,8 +682,13 @@ def build_launches(
             "--judge-profile",
             "official",
         )
-        if hold:
+        if hold or operation:
             command = (*command, "--hold")
+        requested = ptb_environment.requested_nodes(data)
+        if requested is not None:
+            command = (*command, "--nodelist", ",".join(sorted(requested)))
+        if operation:
+            command = (*command, "--environment-acceptance", "humaneval", "--walltime", data["operation"]["walltime"])
         context_profile = f"{cell['agent_model']}:{cell['effort']}"
         record = (paths.REPO_ROOT / data["context_validation"][context_profile]).resolve()
         environment = {
@@ -589,11 +718,23 @@ def build_launches(
             "POST_TRAIN_BENCH_SPEC_PATH": data["ownership"]["spec"],
             "POST_TRAIN_BENCH_EXPECTED_CONTEXT_TOKENS": str(cell["context_tokens"]),
         }
+        if requested is not None:
+            environment["POST_TRAIN_BENCH_FROZEN_REQUESTED_NODES"] = ",".join(sorted(requested))
+        if operation:
+            environment["POST_TRAIN_BENCH_ENVIRONMENT_ACCEPTANCE_OUTPUT_ROOT"] = str(
+                ptb_environment.environment_output_root(paths.data_root(), data))
+            environment["POST_TRAIN_BENCH_ENVIRONMENT_ACCEPTANCE_SPEC"] = json.dumps({
+                "operation": data["operation"], "images": {
+                    contract["container"]["name"] + ".sif": contract["container"]["sha256"],
+                    contract["evaluation_container"]["name"]: contract["evaluation_container"]["sha256"]}}, sort_keys=True)
+            environment["POST_TRAIN_BENCH_REQUIRE_COMPLETE"] = "0"
         if record.is_file():
             environment["POST_TRAIN_BENCH_CONTEXT_VALIDATION_SHA256"] = _sha256(record)
         checkout = None
         if cell.get("awm"):
             checkout = materialize_awm_checkout(cell["awm"]["sha"], cell["awm"]["paths"])
+            # The receipt names the variant fully: the tree shipped and the setup it runs.
+            checkout = {**checkout, "setup": cell["awm"]["setup"]}
             # Read on the host by run_task.sh: one read-only bind for the agent sandbox.
             environment["POST_TRAIN_BENCH_EXTRA_BINDS"] = f"{checkout['dir']}:{AWM_MOUNT}:ro"
             # Forwarded into the sandbox by the scaffold's env_passthrough.txt.
@@ -616,6 +757,20 @@ def local_issues(
     selected_cells = (
         [_cell(data, cell_id) for cell_id in cell_ids] if cell_ids else list(data["cells"])
     )
+    try:
+        ptb_environment.validate_operation(data)
+        site = read_ptb_env().get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+        if "placement" in data:
+            ptb_environment.effective_nodes(data, _expanded_nodes(site))
+    except (ptb_environment.EnvironmentError, ExperimentError) as exc:
+        issues.append(str(exc))
+    if ptb_environment.is_operation(data):
+        for name, relative in ptb_environment.SOURCE_PATHS.items():
+            path = PTB_ROOT / relative
+            if not path.is_file() or not _is_git_tracked(PTB_ROOT, relative):
+                issues.append(f"missing or untracked environment source: {relative}")
+            elif _sha256(path) != data["operation"][f"{name}_sha256"]:
+                issues.append(f"environment source hash mismatch: {relative}")
     selected_tasks = {_cell_task(contract, cell) for cell in selected_cells}
     for task in selected_tasks:
         required_assets = [
@@ -638,6 +793,9 @@ def local_issues(
             elif not _is_git_tracked(PTB_ROOT, relative):
                 issues.append(f"untracked agent asset cannot enter frozen source: {relative}")
     env = read_ptb_env()
+    issues.extend(ptb_environment.worker_source_issues(paths.REPO_ROOT, PTB_ROOT, env))
+    if "humaneval" in selected_tasks:
+        issues.extend(_environment_admission_issues(data, env))
     containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
     hf_home = Path(env.get("HF_HOME", ""))
     selected_base_models = {cell["base_model"] for cell in selected_cells}
@@ -697,6 +855,29 @@ def local_issues(
                     f"unreadable {expected_context}-token provider validation for {profile}: {exc}"
                 )
     return issues
+
+
+def _environment_admission_issues(data: dict[str, Any], env: dict[str, str]) -> list[str]:
+    try:
+        reference = ptb_environment.validate_admission_reference(data)
+        path = paths.REPO_ROOT / reference["receipt"]
+        if not _is_git_tracked(paths.REPO_ROOT, reference["receipt"]) or _sha256(path) != reference["sha256"]:
+            raise ptb_environment.EnvironmentError("admission receipt is untracked or changed")
+        receipt = load_receipt(path)
+        if (receipt.get("ownership", {}).get("branch") != data.get("ownership", {}).get("branch")
+                or receipt.get("subqueue") != env.get("POST_TRAIN_BENCH_SLURM_SUBQUEUE")):
+            raise ptb_environment.EnvironmentError("admission belongs to a different experiment owner")
+        commit = _git(PTB_ROOT, "rev-parse", "HEAD")
+        if data.get("source", {}).get("ptb_commit", commit) != commit:
+            raise ptb_environment.EnvironmentError("current PTB source differs from frozen scientific receipt")
+        completed = {str(job["job_id"]) for job in receipt["jobs"] if _job_state(str(job["job_id"])) == "COMPLETED"}
+        ptb_environment.validate_readiness(
+            data, receipt, site_nodes=_expanded_nodes(env.get("POST_TRAIN_BENCH_SLURM_NODELIST", "")),
+            ptb_commit=commit, completed_job_ids=completed,
+        )
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as exc:
+        return [f"HumanEval environment admission failed: {exc}"]
+    return []
 
 
 def _base_model_snapshot_issues(model: str, revision: str, snapshot: Path) -> list[str]:
@@ -760,6 +941,7 @@ def site_issues() -> list[str]:
     env = read_ptb_env()
     partition = env.get("POST_TRAIN_BENCH_SLURM_PARTITION", "")
     nodelist = env.get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+    subqueue = env.get("POST_TRAIN_BENCH_SLURM_SUBQUEUE", "")
     issues: list[str] = []
     if env.get("POST_TRAIN_BENCH_SLURM_GPU_MODE") != "gres":
         issues.append("site must use POST_TRAIN_BENCH_SLURM_GPU_MODE=gres")
@@ -799,8 +981,32 @@ def site_issues() -> list[str]:
         ).split()
     except (OSError, subprocess.CalledProcessError) as exc:
         return issues + [f"cannot expand Slurm nodelist {nodelist}: {exc}"]
-    if len(nodes) != 4:
-        issues.append(f"site nodelist must resolve to four nodes, got {len(nodes)}")
+    if subqueue:
+        registry_path = env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+        if not registry_path:
+            issues.append(f"subqueue {subqueue} requires an ownership registry path")
+        else:
+            try:
+                from awm import slurm_queue
+
+                registry = slurm_queue.load_registry(Path(registry_path))
+                config = slurm_queue.subqueue_config(registry, subqueue)
+            except (OSError, slurm_queue.QueueError) as exc:
+                issues.append(f"cannot validate Slurm subqueue {subqueue}: {exc}")
+            else:
+                expected_nodes = list(config["nodes"])
+                if set(nodes) != set(expected_nodes):
+                    issues.append(
+                        f"site nodelist for subqueue {subqueue} must be "
+                        f"{','.join(expected_nodes)}; got {','.join(nodes)}"
+                    )
+                branch = current_top_branch()
+                if branch not in config["branches"]:
+                    issues.append(
+                        f"current branch {branch} does not belong to Slurm subqueue {subqueue}"
+                    )
+    elif len(nodes) != 4:
+        issues.append(f"legacy site nodelist must resolve to four nodes, got {len(nodes)}")
     for node in nodes:
         line = subprocess.check_output(["scontrol", "show", "node", node, "-o"], text=True)
         cfg = re.search(r"\bCfgTRES=([^ ]+)", line)
@@ -919,9 +1125,26 @@ def submit_context_smokes(data: dict[str, Any], cell_ids: list[str]) -> list[dic
     return jobs
 
 
-def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | None = None) -> Path:
+def submit(
+    data: dict[str, Any],
+    *,
+    pilot: bool = False,
+    cell_ids: list[str] | None = None,
+    keep_held: bool = False,
+) -> Path:
+    operation = ptb_environment.is_operation(data)
+    if operation and (pilot or cell_ids):
+        raise ExperimentError("environment acceptance requires a new immutable whole-batch receipt")
+    if "placement" in data:
+        keep_held = True
+    if operation:
+        keep_held = True
+        if not read_ptb_env().get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY"):
+            raise ExperimentError("environment acceptance requires the ownership registry")
     if pilot and cell_ids:
         raise ExperimentError("pilot and explicit retry cells are mutually exclusive")
+    if pilot and keep_held:
+        raise ExperimentError("a pilot cannot be kept held; held buffers are formal cells")
     snapshot = source_snapshot()
     assert_source_ownership(data, snapshot)
     selected_cell_ids = _pilot_cell_ids(data) if pilot else cell_ids
@@ -938,7 +1161,10 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
     dry_run(data, pilot=pilot)
     submitted_at = datetime.now(timezone.utc).isoformat()
     out_dir = paths.ensure(paths.data_root() / "ptb" / "batches" / data["batch_id"])
-    if pilot:
+    if operation:
+        kind = ptb_environment.KIND
+        run_purpose = kind
+    elif pilot:
         kind = "pilot"
         run_purpose = None
     elif selected_cell_ids:
@@ -973,6 +1199,7 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
         "state": "submitting",
         "manifest": data["_path"],
         "ownership": data["ownership"],
+        "subqueue": ptb_env.get("POST_TRAIN_BENCH_SLURM_SUBQUEUE", ""),
         "submitted_at": submitted_at,
         "source": snapshot,
         "contract": data["contract"],
@@ -993,10 +1220,19 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
                 "POST_TRAIN_BENCH_SLURM_PARTITION",
                 "POST_TRAIN_BENCH_SLURM_NODELIST",
                 "POST_TRAIN_BENCH_SLURM_RESERVATION",
+                "POST_TRAIN_BENCH_SLURM_SUBQUEUE",
             )
         },
         "jobs": [],
     }
+    if "environment_admission" in data:
+        receipt["environment_admission"] = dict(data["environment_admission"])
+    if "placement" in data:
+        receipt["placement"] = data["placement"]
+    if operation:
+        receipt["operation"] = data["operation"]
+        receipt["environment_output_root"] = str(ptb_environment.environment_output_root(paths.data_root(), data))
+        receipt["environment_uid"] = os.getuid()
     output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     frozen_environment = {
         "POST_TRAIN_BENCH_FROZEN_TOP_BRANCH": snapshot["top_branch"],
@@ -1043,29 +1279,42 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
             }
         )
         output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    ownership_registry = ptb_env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
     if not pilot:
         receipt["state"] = "held"
         output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-        ownership_registry = ptb_env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
-        if ownership_registry:
-            try:
-                from awm import slurm_queue
+    if ownership_registry:
+        try:
+            from awm import slurm_queue
 
-                slurm_queue.register_receipt(
-                    output,
-                    registry_path=Path(ownership_registry),
-                )
-            except (OSError, slurm_queue.QueueError) as exc:
-                receipt["state"] = "ownership_registration_failed"
-                receipt["failure"] = {
-                    "reason": "all formal jobs remain held because ownership registration failed",
-                    "error": str(exc),
-                }
-                output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
-                raise ExperimentError(
-                    "formal jobs were submitted but remain held because ownership registration "
-                    f"failed: {exc} (receipt: {output})"
-                ) from exc
+            slurm_queue.register_receipt(
+                output,
+                registry_path=Path(ownership_registry),
+            )
+        except (OSError, slurm_queue.QueueError) as exc:
+            receipt["state"] = "ownership_registration_failed"
+            receipt["failure"] = {
+                "reason": (
+                    "all formal jobs remain held because ownership registration failed"
+                    if not pilot
+                    else "pilot jobs were submitted but ownership registration failed"
+                ),
+                "error": str(exc),
+            }
+            output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+            disposition = (
+                "formal jobs were submitted but remain held"
+                if not pilot
+                else "pilot jobs were submitted and must be resolved from this receipt"
+            )
+            raise ExperimentError(
+                f"{disposition}; ownership registration failed: {exc} (receipt: {output})"
+            ) from exc
+    if keep_held:
+        receipt["held_at"] = datetime.now(timezone.utc).isoformat()
+        output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        return output
+    if not pilot:
         job_ids = ",".join(job["job_id"] for job in receipt["jobs"])
         release = subprocess.run(
             _release_command(ptb_env, job_ids), text=True, capture_output=True, check=False
@@ -1087,22 +1336,205 @@ def submit(data: dict[str, Any], *, pilot: bool = False, cell_ids: list[str] | N
     return output
 
 
-def audit_result(result_dir: Path) -> list[str]:
-    validator = PTB_ROOT / "src" / "utils" / "validate_completed_run.py"
+def _expanded_nodes(nodelist: str) -> set[str]:
+    if not nodelist or nodelist == "(null)":
+        return set()
     result = subprocess.run(
-        [sys.executable, str(validator), str(result_dir), "--judge-profile", "official"],
+        ["scontrol", "show", "hostnames", nodelist],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise ExperimentError(
+            f"cannot expand Slurm nodelist {nodelist}: "
+            f"{result.stderr.strip() or 'scontrol failed'}"
+        )
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def release_held(
+    receipt_path: Path,
+    *,
+    allow_shared_reservation: bool = False,
+    authorization: str | None = None,
+) -> dict[str, Any]:
+    """Release one registered held receipt after ownership and placement revalidation.
+
+    ``allow_shared_reservation`` is a per-release, human-authorized exception to
+    the native-reservation equality check only. Ownership, frozen node lists,
+    PENDING state and ``JobHeldUser`` remain mandatory.
+    """
+    receipt_path = Path(receipt_path)
+    receipt = load_receipt(receipt_path)
+    if receipt.get("state") != "held":
+        raise ExperimentError(
+            f"receipt {receipt_path} is {receipt.get('state')!r}, expected 'held'"
+        )
+    ptb_env = read_ptb_env()
+    registry_path = ptb_env.get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+    if not registry_path:
+        raise ExperimentError("held release requires the Slurm ownership registry")
+    try:
+        from awm import slurm_queue
+
+        snapshot = slurm_queue.collect_snapshot(Path(registry_path))
+    except (OSError, slurm_queue.QueueError) as exc:
+        raise ExperimentError(f"cannot inspect ownership before held release: {exc}") from exc
+    if not snapshot.get("ownership_ok"):
+        raise ExperimentError("OWNERSHIP FAIL: held jobs remain held")
+    if (receipt.get("contract") or {}).get("task") == "humaneval":
+        admission_issues = _environment_admission_issues(receipt, ptb_env)
+        if admission_issues:
+            raise ExperimentError("; ".join(admission_issues))
+
+    frozen_nodelist = str(
+        (receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", "")
+    )
+    frozen_nodes = _expanded_nodes(frozen_nodelist)
+    if not frozen_nodes:
+        raise ExperimentError("held receipt has no frozen Slurm nodes")
+    try:
+        requested_nodes = ptb_environment.effective_nodes(receipt, frozen_nodes)
+    except ptb_environment.EnvironmentError as exc:
+        raise ExperimentError(str(exc)) from exc
+    reservation = str(
+        (receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_RESERVATION", "")
+    )
+    if not reservation:
+        raise ExperimentError("held receipt has no frozen Slurm reservation")
+    reservation_result = subprocess.run(
+        ["scontrol", "show", "reservation", reservation, "-o"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if reservation_result.returncode:
+        raise ExperimentError(
+            f"cannot inspect frozen reservation {reservation}: "
+            f"{reservation_result.stderr.strip() or 'scontrol failed'}"
+        )
+    reservation_nodes_match = re.search(r"\bNodes=(\S+)", reservation_result.stdout)
+    reservation_nodes = _expanded_nodes(
+        reservation_nodes_match.group(1) if reservation_nodes_match else ""
+    )
+    if allow_shared_reservation and not (authorization or "").strip():
+        raise ExperimentError(
+            "shared-reservation release override requires a non-empty authorization record"
+        )
+    if reservation_nodes != frozen_nodes and not allow_shared_reservation:
+        raise ExperimentError(
+            f"reservation {reservation} is not native two-node isolation: "
+            f"{','.join(sorted(reservation_nodes)) or '(none)'} vs frozen "
+            f"{','.join(sorted(frozen_nodes))}"
+        )
+    for job in receipt["jobs"]:
+        job_id = str(job["job_id"])
+        if _job_state(job_id) != "PENDING":
+            raise ExperimentError(f"held job {job_id} is not PENDING; refusing release")
+        result = subprocess.run(
+            ["scontrol", "show", "job", job_id, "-o"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode:
+            raise ExperimentError(
+                f"cannot inspect held job {job_id}: {result.stderr.strip() or 'scontrol failed'}"
+            )
+        reason = re.search(r"\bReason=(\S+)", result.stdout)
+        requested = re.search(r"\bReqNodeList=(\S+)", result.stdout)
+        if not reason or reason.group(1) != "JobHeldUser":
+            raise ExperimentError(
+                f"held job {job_id} reason is "
+                f"{reason.group(1) if reason else 'missing'}, expected JobHeldUser"
+            )
+        actual_nodes = _expanded_nodes(requested.group(1) if requested else "")
+        if actual_nodes != requested_nodes:
+            raise ExperimentError(
+                f"held job {job_id} ReqNodeList differs from frozen receipt: "
+                f"{','.join(sorted(actual_nodes)) or '(null)'} vs "
+                f"{','.join(sorted(requested_nodes))}"
+            )
+
+    job_ids = ",".join(str(job["job_id"]) for job in receipt["jobs"])
+    release = subprocess.run(
+        _release_command(ptb_env, job_ids), text=True, capture_output=True, check=False
+    )
+    if release.returncode:
+        raise ExperimentError(
+            f"held jobs remain held; release failed: {release.stderr.strip() or 'scontrol failed'}"
+        )
+    receipt.pop("_path", None)
+    receipt["state"] = "submitted"
+    receipt["released_at"] = datetime.now(timezone.utc).isoformat()
+    if allow_shared_reservation:
+        receipt["release_safety_override"] = {
+            "allow_shared_reservation": True,
+            "authorization": str(authorization).strip(),
+            "reservation": reservation,
+            "reservation_nodes": sorted(reservation_nodes),
+            "frozen_nodes": sorted(frozen_nodes),
+        }
+    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    return receipt
+
+
+def receipt_task(receipt: dict[str, Any], job_id: str, cell_id: str | None = None) -> str:
+    """Resolve a task from the immutable job/cell contract, never result claims."""
+    raw_jobs, raw_cells = receipt.get("jobs"), receipt.get("cells")
+    if (not isinstance(raw_jobs, list) or not isinstance(raw_cells, list)
+            or any(not isinstance(item, dict) for item in raw_jobs + raw_cells)):
+        raise ExperimentError("receipt jobs/cells must be lists of frozen records")
+    jobs = [job for job in raw_jobs if str(job.get("job_id")) == str(job_id)]
+    if len(jobs) != 1 or (cell_id is not None and str(jobs[0].get("cell_id")) != str(cell_id)):
+        raise ExperimentError("job/cell does not uniquely match the receipt")
+    cells = [cell for cell in raw_cells
+             if str(cell.get("id")) == str(jobs[0].get("cell_id"))]
+    if len(cells) != 1:
+        raise ExperimentError("receipt does not identify a unique frozen cell")
+    contract = receipt.get("contract") or {}
+    if not isinstance(contract, dict):
+        raise ExperimentError("receipt contract must be a frozen object")
+    return _cell_task(contract, cells[0])
+
+
+def audit_result(result_dir: Path, *, expected_task: str | None = None) -> list[str]:
+    """Audit with an independent task identity; an unscoped check is diagnostic only.
+
+    Old GSM8K/AIME validators keep their CLI. HumanEval/GPQA require the new strict
+    interface and never retries without the task flag after a rejection.
+    """
+    issues: list[str] = []
+    if not expected_task:
+        issues.append("independent expected task is required for completion validation")
+    else:
+        try:
+            provenance = json.loads((result_dir / "runtime_provenance.json").read_text())
+            experiment = provenance.get("experiment") if isinstance(provenance, dict) else None
+            actual_task = experiment.get("task") if isinstance(experiment, dict) else None
+            if actual_task != expected_task:
+                issues.append("runtime provenance task differs from independent expected task")
+        except (OSError, ValueError):
+            issues.append("cannot read runtime provenance for expected task validation")
+    validator = PTB_ROOT / "src" / "utils" / "validate_completed_run.py"
+    command = [sys.executable, str(validator), str(result_dir), "--judge-profile", "official"]
+    if expected_task in ("humaneval", "gpqamain"):
+        command.extend(["--expected-task", expected_task])
+    result = subprocess.run(
+        command,
         text=True,
         capture_output=True,
         check=False,
     )
     if result.returncode == 0:
-        return []
-    issues = []
+        return issues
+    validator_issues = []
     for line in result.stdout.splitlines():
         prefix = "COMPLETION ERROR: "
         if line.startswith(prefix):
-            issues.append(line.removeprefix(prefix))
-    return issues or [result.stderr.strip() or "completion validator failed without details"]
+            validator_issues.append(line.removeprefix(prefix))
+    return issues + (validator_issues or [result.stderr.strip() or "completion validator failed without details"])
 
 
 def load_receipt(filename: Path) -> dict[str, Any]:
@@ -1120,8 +1552,13 @@ def _job_state(job_id: str) -> str:
         capture_output=True,
         check=False,
     )
-    states = [line.strip().split("|")[0] for line in result.stdout.splitlines() if line.strip()]
-    return states[0] if states else "UNKNOWN"
+    for line in result.stdout.splitlines():
+        state = line.split("|", 1)[0].strip()
+        if state:
+            # sacct decorates states (e.g. "CANCELLED by 0" or "COMPLETED+").
+            # Operator gates and terminal harvesting need the canonical name.
+            return state.split()[0].rstrip("+")
+    return "UNKNOWN"
 
 
 def result_for_job(job_id: str) -> Path | None:
@@ -1138,7 +1575,11 @@ def result_for_job(job_id: str) -> Path | None:
 def receipt_status(receipt: dict[str, Any]) -> list[dict[str, str | None]]:
     status = []
     for job in receipt["jobs"]:
-        result_dir = result_for_job(job["job_id"])
+        if ptb_environment.is_operation(receipt):
+            candidate = ptb_environment.report_directory(receipt, job)
+            result_dir = candidate if candidate.is_dir() else None
+        else:
+            result_dir = result_for_job(job["job_id"])
         status.append(
             {
                 "cell_id": job["cell_id"],
@@ -1153,6 +1594,19 @@ def receipt_status(receipt: dict[str, Any]) -> list[dict[str, str | None]]:
 
 def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
     issues: dict[str, list[str]] = {}
+    if ptb_environment.is_operation(receipt):
+        for job in receipt["jobs"]:
+            errors = []
+            if _job_state(str(job["job_id"])) != "COMPLETED":
+                errors.append("environment job has not completed")
+            try:
+                ptb_environment.validate_acceptance(receipt, job,
+                    site_nodes=_expanded_nodes(str(receipt.get("site", {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", ""))),
+                    expected_uid=receipt.get("environment_uid"))
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                errors.append(str(exc))
+            issues[job["cell_id"]] = errors
+        return issues
     expected_source = receipt.get("source") or {}
     ownership = receipt.get("ownership") or {}
     contract = receipt.get("contract") or {}
@@ -1172,7 +1626,12 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
             cell_issues.append("result directory not found")
         else:
             result_dir = Path(job["result_dir"])
-            cell_issues.extend(audit_result(result_dir))
+            try:
+                expected_task = receipt_task(receipt, str(job["job_id"]), str(job["cell_id"]))
+            except ExperimentError as exc:
+                expected_task = None
+                cell_issues.append(str(exc))
+            cell_issues.extend(audit_result(result_dir, expected_task=expected_task))
             provenance_path = result_dir / "runtime_provenance.json"
             if provenance_path.is_file():
                 try:
@@ -1227,6 +1686,10 @@ def audit_receipt(receipt: dict[str, Any]) -> dict[str, list[str]]:
                         cell_issues.append("runtime base-model cache snapshot is incomplete")
                     if provenance.get("judge_profile") != "official":
                         cell_issues.append("runtime provenance judge profile is not official")
+                    allowed_nodes = ptb_environment.effective_nodes(receipt, _expanded_nodes(
+                        str(site.get("POST_TRAIN_BENCH_SLURM_NODELIST", ""))))
+                    if slurm.get("node") not in allowed_nodes:
+                        cell_issues.append("runtime Slurm node is outside frozen requested nodes")
                     if slurm.get("partition") != site.get("POST_TRAIN_BENCH_SLURM_PARTITION"):
                         cell_issues.append("runtime Slurm partition differs from frozen site")
                     if str(slurm.get("cpus_per_task")) != str(contract.get("cpus")):

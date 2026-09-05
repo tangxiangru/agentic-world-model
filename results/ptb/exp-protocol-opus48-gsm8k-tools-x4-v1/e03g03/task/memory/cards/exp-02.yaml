@@ -1,0 +1,99 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-04T23:05:48Z'
+situation:
+  elapsed_h: 0.5
+  remaining_h: 9.5
+  incumbent:
+    ref: exp-01
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.04, protocol_n: 150}
+  trigger: "exp-01 baseline is 0.04: the base model rarely emits a clean final 'ANSWER: N' and stop, so the last-number scorer reads wrong numbers."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-01_base_n150.json, locator: "accuracy=0.04"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full FT", reason: "full FT gives best quality and a native (non-adapter) save; LoRA merge adds a step and risk. Keep LoRA as a fallback if OOM."}
+    - {option: "few-shot training prompts", reason: "8x longer sequences for identical fixed prefix; zero-shot SFT generalizes to the eval's 10-shot prompt"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "The base model does not follow the GSM8K answer protocol: it does not produce a step-by-step solution ending in 'ANSWER: N' then stop at <end_of_turn>, so accuracy is 0.04."
+  evidence:
+    - {path: /home/ben/task/eval/exp-01_base_n150.json, locator: "accuracy=0.04", observation: "near-floor; format/stop failure dominates"}
+  affected_share: 0.96
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Full SFT on GSM8K-train chain-of-thought reformatted to end with 'ANSWER: N' + <end_of_turn> will raise GSM8K accuracy (n=150) far above the 0.04 base comparator."
+  mechanism: "Teaching the exact instruction->CoT->'ANSWER: N'->stop mapping makes the last number the correct answer and makes the model halt, which the last-number scorer rewards."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-01, magnitude: "+40 pts or more"}
+  falsified_if: "n=150 accuracy <= 0.20, or loss is flat/zero (a truncation/eos defect)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/gsm8k_train.jsonl
+      source: "local (openai/gsm8k main train split, HF)"
+      n_examples: 7473
+      built_by: /home/ben/task/scripts/prep_data.py
+      build_command: [python, scripts/prep_data.py]
+      selection: "strip <<...>> calculator spans; replace '#### N' with 'ANSWER: N'; append <end_of_turn>; zero-shot MATH_PROMPT_TEMPLATE prompt"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer via awm SaveSafeTrainer; full FT, vision tower frozen"
+    peft: "none"
+    hyperparams: {lr: 1.0e-5, epochs: 3, batch_size: 4, grad_accum: 4, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "reasoning lines then 'ANSWER: <int>' as the final line; last number is the gold answer"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [bash, /home/ben/task/scripts/run_exp02.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_exp02.sh
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-02/final, --limit, "150", --json-output-file, /home/ben/task/eval/exp-02_n150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-01
+    value: 0.04
+    path: /home/ben/task/eval/exp-01_base_n150.json
+  diagnostic:
+    what: "final training loss should be well below 1.0 (learning, not truncated)"
+    n: null
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.42
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1401}
+  training_summary: {final_loss: 0.438, steps: 1401, notes: "3 epochs, 7473 rows, ~25min; loss plateaued ~0.36"}
+  measurements:
+    - {metric: accuracy, value: 0.3933, n: 150, path: /home/ben/task/eval/exp-02_n150.json, delta_vs_comparator: 0.3533}
+  diagnostic_result: {value: 0.3933, path: /home/ben/task/logs/2026-09-04T23-33-21+00-00_gsm8k_UvoTNQnyfCmZbH84BJffqr.json, notes: "150/150 clean 'stop'; only 1/150 missing ANSWER: marker. Failures are reasoning/arithmetic errors, NOT format/stop."}
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "SFT lifted GSM8K 0.04 -> 0.393 (n=150). Format and stopping are solved (150/150 clean stops). Remaining errors are reasoning/arithmetic mistakes, so the next lever is more/higher-quality reasoning data."
+  decision: iterate
+  next_step: "exp-03: SFT from base on GSM8K-train + a MetaMathQA GSM-type subset (reformatted to 'ANSWER: N'), to improve reasoning accuracy."

@@ -1,0 +1,116 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T18:12:00Z'
+
+situation:
+  elapsed_h: 5.3
+  remaining_h: 4.7
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.672, protocol_n: 500}
+  trigger: "exp-04's RFT epoch moved n=500 accuracy by -0.2 pts against a 2.1 pt sigma and its training loss never left ~0.23, so self-distillation is exhausted; the one lever with an unbroken track record here is more unique off-policy data (exp-02: 0.060 -> 0.672 on 90k such rows)."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_final_dev500.json, locator: "accuracy=0.670 vs comparator 0.672"}
+    - {path: /home/ben/task/memory/cards/exp-04.yaml, locator: "result.training_summary", observation: "loss flat at ~0.23 for all 508 steps: no gradient signal in the model's own correct samples"}
+    - {path: /home/ben/task/eval/exp-02_ep1_dev150.json, locator: "accuracy=0.7067 vs 0.7467 at epoch 2", observation: "the data-scaling curve had not flattened when exp-02 ran out of epochs"}
+  alternatives_rejected:
+    - {option: "A second RFT round from exp-04", reason: "exp-04 falsified the first one; a second pass over the same fixed point cannot do better"}
+    - {option: "DPO/GRPO on the correct-vs-incorrect samples already on disk", reason: "the preference pairs exist, but a tuned RL loop plus its eval does not fit in 4.7 h alongside the final-model verification, and exp-04's flat loss suggests the model's own samples carry little signal either way"}
+    - {option: "Restart from base on sft_mix_v1 + sft_mix_v2 for 2 epochs", reason: "145k rows x 2 epochs is ~110M tokens, over 3 h of training, which would leave no room to evaluate or to fall back"}
+    - {option: "Weight-average exp-02/final and exp-04/final (model soup)", reason: "cheap and worth trying, but it averages two checkpoints that score the same; it is queued as the follow-up if this card leaves time, not ahead of new data"}
+  pitfalls_hit:
+    - {what: "The first sft_mix_v2 build excluded only the dev questions, so 53188 of its 100000 rows re-used questions already in sft_mix_v1 and risked exact-duplicate rows", cost_h: 0.1, fix: "rebuilt excluding every question in sft_mix_v1 and rft_mix_v1 as well; the fully-fresh pool yields 55506 rows over 37429 distinct questions"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --dry-run, --model, ckpts/exp-02/final, --data, data/sft_mix_v2.jsonl], outcome: "55459 rows kept of 55506 (47 over max_seq_len, 0.08%), 28.0M tokens, len p50=351 p99=2224; template hash unchanged (7de1c58e208e); all targets end in token 106"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/contam_v2.jsonl], outcome: "55506 documents scanned, 0 contaminated, 0 matches"}
+
+problem:
+  statement: "exp-02/final leaves 164 of 500 items wrong, all reasoning errors, and the two cheap follow-ups are spent: a second epoch on the same data bought ~4 pts and an RFT epoch bought nothing. The model has seen 90k unique GSM8K/MATH-derived solutions; nothing has yet tested whether its accuracy is data-limited or capacity-limited at 4B."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_final_dev500.json, locator: "whole file", observation: "0.672 with max_tokens 0.008 and multiple-marker 0.000 - the residual is entirely reasoning"}
+    - {path: /home/ben/task/analysis/exp-04_final_dev500.json, locator: "accuracy=0.670", observation: "on-policy data does not move it"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: "One epoch of continued training from exp-02/final on 55506 OpenMathInstruct-2 rows whose questions are disjoint from everything the model has seen raises n=500 accuracy above exp-02/final's 0.672."
+  mechanism: "The parent's gains came from off-policy solutions written by a much stronger model (Llama-3.1-405B-Instruct); those carry reasoning the 4B cannot yet produce itself, which is exactly what exp-04 showed self-samples lack. 37429 unseen questions add ~60% more distinct problems on top of the 90k already trained on, so if accuracy is data-limited rather than capacity-limited it should move."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+1 to +4 pts at n=500"}
+  falsified_if: "n=500 accuracy is at or below 0.672, which would say the 4B is capacity-limited at this data scale and further off-policy SFT is not the lever."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 split=train_1M (augmented_gsm8k 40506, augmented_math 15000)"
+      n_examples: 55506
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: "questions disjoint from data/sft_mix_v1.jsonl, data/rft_mix_v1.jsonl and data/dev_aug500.jsonl (normalised alphanumeric match); at most 2 solutions per question; trailing '\\boxed{...}' sentence stripped so 'ANSWER: N' is the only verdict; expected_answer <=30 chars. No item from the gsm8k TEST split is read at any point."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full fine-tune, flash_attention_2, token-budget batch sampler"
+    peft: "none (vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 1.0e-5, epochs: 1.0, batch_size: 10240, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "identical to exp-02: <bos><start_of_turn>user\\n{10-shot prefix on 6% of rows}{MATH_PROMPT_TEMPLATE}<end_of_turn>\\n<start_of_turn>model\\n{CoT}\\n\\nANSWER: {N}<end_of_turn>; loss on the model turn only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-02/final, --data, /home/ben/task/data/sft_mix_v2.jsonl, --out, /home/ben/task/ckpts/exp-05, --epochs, '1', --lr, '1e-5', --max-tokens, '10240', --grad-accum, '4', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-05.log
+  output_dir: /home/ben/task/ckpts/exp-05
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '48', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.672
+    path: /home/ben/task/eval/exp-02_final_dev500.json
+  diagnostic:
+    what: "max_tokens share and multiple-ANSWER-marker share must stay <=0.01 each, as in exp-02 and exp-04"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.85
+  output_checkpoint: /home/ben/task/ckpts/exp-05/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-05/checkpoint-723, step: 723}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 723}
+  training_summary: {final_loss: 0.3324, steps: 723, notes: "train_runtime 3070 s, 18.1 samples/s. Loss sits at ~0.33 against exp-04's flat ~0.23 on self-samples: the fresh off-policy rows genuinely carry gradient the model did not already have."}
+  measurements:
+    - {metric: accuracy, value: 0.704, n: 500, path: /home/ben/task/eval/exp-05_final_dev500.json, delta_vs_comparator: 0.032}
+  diagnostic_result:
+    value: 0.010
+    path: /home/ben/task/analysis/exp-05_final_dev500.json
+    notes: "max_tokens share 0.010 and multiple-ANSWER-marker share 0.000, unchanged from exp-02/exp-04: the gain is reasoning, not formatting. Latent first-answer accuracy 0.664 -> 0.702 tracks the scored gain one-for-one."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "n=500 0.672 -> 0.704 (+3.2 pts, 1.5 sigma), inside the predicted +1 to +4 band. The contrast with exp-04 is the point: the same one-epoch budget on 55k *unseen off-policy* rows moves the score while 48k self-generated correct rows move nothing, so at 4B this model is still data-limited, not capacity-limited."
+  decision: adopt
+  next_step: "exp-06 scores the uniform soup of exp-02/exp-04/exp-05 (already built, costs one eval). exp-07 repeats this card's lever with a further 90k unseen augmented_gsm8k rows pulled from OpenMathInstruct-2's full 14M train split, since train_1M's supply of unseen questions is now exhausted."

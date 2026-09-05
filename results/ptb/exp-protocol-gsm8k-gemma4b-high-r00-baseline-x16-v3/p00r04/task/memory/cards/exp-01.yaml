@@ -1,0 +1,128 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-01
+created_at: '2026-09-02T12:29:17Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.3
+  remaining_h: 9.7
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: null, protocol_n: null}
+  trigger: "Session start: no measured number exists for the starting checkpoint, so no later card could have a comparator (pitfall comparator_protocol_mismatch)."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "empty - no prior cards"}
+  alternatives_rejected:
+    - {option: "Skip the baseline and just train", reason: "protocol rule 2 needs a comparator measured under the same protocol; without it every later delta is unfalsifiable"}
+    - {option: "Baseline at --limit 500 for tighter error bars", reason: "10-shot prompts with 4000 max_tokens; --limit 150 is the harness default and the budget is 10 h"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "google/gemma-3-4b-pt is a raw pretrained, non-instruction-tuned checkpoint. Under the grader's 10-shot prompt it is expected to continue past its answer instead of stopping at <end_of_turn>, which appends further numbers after the answer; the grader's end-anchored numeric matcher then reads the wrong number. The size of that gap is unmeasured."
+  evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "L27-35, L50-66, L77"
+      observation: "task = 10-shot system message + MATH_PROMPT_TEMPLATE, scorer match(numeric=True) with default location='end'"
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_ai/scorer/_common.py
+      locator: "match_str, location=='end' branch"
+      observation: "completion is split on whitespace and reversed; the LAST numeric token in the whole completion must equal the gold"
+    - path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d/generation_config.json
+      locator: eos_token_id
+      observation: "eos_token_id = [1, 106] = <eos> and <end_of_turn>; templates/gemma3.jinja closes model turns with <end_of_turn>"
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe250.jsonl
+    n: 250
+    selection: "250 items sampled (seed 1234) from the GSM8K *train* split and permanently withheld from every training pool; used as the local probe set so no benchmark test item is ever inspected item-by-item"
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Evaluating the unmodified base snapshot under evaluate.py --limit 150 produces a non-null GSM8K accuracy, and the per-sample log shows what share of the failures are format failures (last numeric token in the completion is not the one on an 'ANSWER: N' line) rather than reasoning failures."
+  mechanism: "A pretrained-only checkpoint has never been trained to stop; under a 10-shot prompt it tends to continue with a fabricated next problem after answering, which puts extra numbers after the answer and defeats the end-anchored matcher."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: null
+  falsified_if: "the eval does not run to completion (vLLM cannot load the snapshot with templates/gemma3.jinja), so no comparator is established"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/probe250.jsonl
+      source: openai/gsm8k (train split, revision e53f048856ff4f594e959d75785d2c2d37b678ee)
+      n_examples: 250
+      built_by: null
+      build_command: [python, -c, "held-out sample of GSM8K train, seed 1234, first 250 of a shuffled index"]
+      selection: "250 GSM8K TRAIN items withheld from all training pools; this card only records the file's existence - no weights are updated here and the scored run reads the official benchmark test split through inspect_evals"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect-ai + vllm 0.11.0 (evaluation only, no weight update)
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: n/a - no training in this card
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp-01_base_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-01.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: null
+    path: null
+  diagnostic:
+    what: "share of the 150 completions whose last whitespace-separated numeric token does not come from an 'ANSWER: N' line (format failure vs reasoning failure)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "no weight update - evaluation only"}
+  measurements:
+    - {metric: accuracy, value: 0.06, n: 150, path: /home/ben/task/eval/exp-01_base_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.3133
+    path: /home/ben/task/analysis/exp-01_format_diag.json
+    notes: "only 31.3% of the 150 completions end in a well-formed 'ANSWER: N' line as their last number; 103/150 are format-broken. Median completion is 6415 chars (max 46120) against a 4000-token cap: the base model does not stop, it keeps inventing follow-on problems, and their numbers land after the answer."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Base google/gemma-3-4b-pt scores 0.060 +/- 0.019 on the harness protocol (dev-150). 103 of 150 completions are format failures: the model answers and then keeps generating, so the end-anchored numeric matcher reads a number from a fabricated follow-on problem. Reasoning ability is therefore badly under-measured at 6%."
+  decision: iterate
+  next_step: "exp-02: completion-only SFT on grader-format targets (reasoning, one 'ANSWER: N' line, then <end_of_turn>) so the model stops in the right place; the comparator for every later card is this 0.060 at n=150."

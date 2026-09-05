@@ -1,0 +1,113 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T20:21:34Z'
+situation:
+  elapsed_h: 2.0
+  remaining_h: 8.0
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6833, protocol_n: 300}
+  trigger: "exp-02's checkpoint inherited the base generation_config unchanged (do_sample true, top_p 0.95, top_k 64, temperature unset so 1.0). vLLM reads that file as its default sampling params, and inspect never overrides temperature, so every graded completion is a temperature-1.0 sample - including one dev-300 failure that degenerated into a repetition loop to the 4000-token cap."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95, no temperature"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_ai/model/_openai.py, locator: "line 233: params['temperature'] only set when config.temperature is not None"}
+    - {path: /home/ben/task/analysis/exp-02_dev300_diag.json, locator: "completions_at_token_cap=4; wrong_examples[0] id gsm8k_01a47d5c repeats 'Let's denote the number of worker bees as z' until the cap"}
+  alternatives_rejected:
+    - {option: "Leave decoding alone and spend the time on more training", reason: "this costs one 7-minute eval and changes no weights; if it is worth points it is the cheapest point on the board"}
+    - {option: "Sweep temperature 0.3/0.5/0.7 as well", reason: "one card is one intervention, and the eval is single-sample, where greedy is the standard choice; a sweep is a later card if greedy disappoints"}
+    - {option: "Pass sampling params through evaluate.py", reason: "evaluate.py is immutable and sends no temperature; the model directory's generation_config.json is the only channel"}
+  pitfalls_hit:
+    - {what: "the first exp-02 eval died: save_pretrained does not write preprocessor_config.json / processor_config.json, and vLLM loads Gemma3ForConditionalGeneration as multimodal, so it refused the directory (pitfall final_model_not_loadable)", cost_h: 0.15, fix: "copy both files from the parent snapshot into every saved checkpoint; scripts/train_sft.py now does it automatically"}
+  smoke_runs:
+    - {command: [python, -c, "vllm ModelConfig.get_diff_sampling_param source"], outcome: "confirmed vLLM honours temperature/top_k/top_p/min_p/repetition_penalty/max_new_tokens from the model directory's generation_config.json as server-side default sampling params"}
+problem:
+  statement: "The incumbent is graded on a single temperature-1.0 sample per item. On a task where one wrong token in an arithmetic step loses the item, sampling injects avoidable variance and lets low-probability continuations through, including degenerate repetition; 4 of 300 completions ran to the 4000-token cap."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev300_diag.json, locator: "completions_at_token_cap=4, output_tokens_max=4000, accuracy 0.6833", observation: "4 items are lost to runaway generations under temperature-1.0 sampling"}
+    - {path: /home/ben/task/eval/exp-02_final_dev300.json, locator: "accuracy 0.6833 stderr 0.0269", observation: "the incumbent number itself is one draw from a sampled decoder"}
+  affected_share: null
+  failure_examples:
+    - {id: gsm8k_01a47d5c, source: /home/ben/task/analysis/exp-02_dev300_diag.json, question: "bee hive composition problem (dev-300)", gold: "400", model_output: "'Let's denote the number of worker bees as z. We can set up an equation...' repeated to the token cap, last number 700", failure: "sampled repetition loop, no answer line"}
+    - {id: gsm8k_0214a5e9, source: /home/ben/task/analysis/exp-02_dev300_diag.json, question: "uniform cost problem (dev-300)", gold: "150", model_output: "misparses 'average of 25 and 75' as 25 + 75/2 = 62.5, ANSWER: 163", failure: "reasoning error, not a decoding error"}
+    - {id: gsm8k_086ca4d9, source: /home/ben/task/analysis/exp-02_dev300_diag.json, question: "pen-pal letter writing time (dev-300)", gold: "3", model_output: "30 / 60 = 0.5 hours, ANSWER: 0.5", failure: "reasoning error, not a decoding error"}
+  watch_set: null
+hypothesis:
+  claim: "Setting temperature to 0.0 in the checkpoint's generation_config.json, changing nothing else, raises dev-300 accuracy relative to exp-02's sampled 0.6833 and removes the runaway completions."
+  mechanism: "vLLM applies the model directory's generation_config as server-side default sampling params and inspect never overrides temperature, so the file controls decoding. With temperature below vLLM's sampling epsilon the sampler becomes argmax: the single graded sample becomes the mode of the model's distribution instead of a draw from it, which for a task scored on exact final numbers is the higher-expected-accuracy estimator."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0.01 to +0.06"
+  falsified_if: "dev-300 accuracy at temperature 0.0 is at or below exp-02's 0.6833."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-03_greedy/generation_config.json
+      source: "derived:exp-02"
+      n_examples: 1
+      built_by: null
+      build_command: [python, -c, "json edit of exp-02/final/generation_config.json: temperature 0.0, do_sample false, top_k and top_p removed"]
+      selection: "no training data in this card; the intervention is this one config file, and the weights are symlinks to exp-02/final"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 server-side default sampling params
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/exp-03_greedy, exp-03_greedy_dev300, '300']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/eval_exp-03_greedy_dev300.log
+  output_dir: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '300', --max-connections, '32', --gpu-memory-utilization, '0.8', --json-output-file, '{out}']
+    dev_set: official gsm8k test --limit 300 (first 300 items in inspect's default order)
+    n: 300
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.6833
+    path: /home/ben/task/eval/exp-02_final_dev300.json
+  diagnostic:
+    what: "completions that hit the 4000-token cap; 4 of 300 under temperature-1.0 sampling"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 938}
+  training_summary: {final_loss: null, steps: null, notes: "no training; the directory is symlinks to exp-02/final plus a rewritten generation_config.json"}
+  measurements:
+    - {metric: accuracy, value: 0.76, n: 300, path: /home/ben/task/eval/exp-03_greedy_dev300.json, delta_vs_comparator: 0.0767}
+  diagnostic_result:
+    value: 6
+    path: /home/ben/task/analysis/exp-03_dev300_diag.json
+    notes: "completions at the 4000-token cap went 4 -> 6 of 300, so greedy decoding slightly increases repetition loops rather than removing them; that half of the mechanism is contradicted. Multi-answer-line completions 3 -> 0, median output 199 -> 186 tokens."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-300 0.6833 -> 0.760 (+7.7 points) from a one-line change to generation_config.json, with identical weights. The sampling-variance half of the mechanism holds; the repetition half does not - greedy produced 6 runaway completions rather than 4, so the gain is entirely from taking the mode instead of a draw."
+  decision: adopt
+  next_step: "exp-04: with decoding fixed, the remaining dev-300 failures are reasoning and arithmetic errors. Retrain from base on 253k GSM8K-derived rows (up to 5 solutions per problem instead of 2) under the exp-02 recipe, and grade greedily."

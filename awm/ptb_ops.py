@@ -30,9 +30,8 @@ from typing import Any
 
 import yaml
 
-from awm import paths
+from awm import paths, ptb_environment, ptb_evidence_retention, ptb_results, slurm_queue
 from awm import ptb_experiments as ptb
-from awm import ptb_results
 
 QUEUE_PATH = Path("experiments/posttrainbench/queue.yaml")
 RESULTS_ROOT = Path("results/ptb")
@@ -66,6 +65,8 @@ job_state = ptb._job_state
 result_for_job = ptb.result_for_job
 audit_result = ptb.audit_result
 submit_batch = ptb.submit
+release_batch = ptb.release_held
+ownership_snapshot = slurm_queue.collect_snapshot
 
 
 class OpsError(ValueError):
@@ -103,19 +104,42 @@ def load_queue(path: Path, repo_root: Path) -> list[dict[str, Any]]:
         if manifest in seen:
             raise OpsError(f"{where}: manifest {manifest} is listed twice")
         seen.add(manifest)
-        if entry.get("want") not in ("submitted", "cancelled"):
-            raise OpsError(f"{where}: want must be submitted or cancelled")
+        if entry.get("want") not in ("submitted", "held", "cancelled"):
+            raise OpsError(f"{where}: want must be submitted, held, or cancelled")
         if entry.get("pilot") not in (None, "first"):
             raise OpsError(f"{where}: pilot must be absent or 'first'")
+        if entry.get("want") == "held" and entry.get("pilot") is not None:
+            raise OpsError(f"{where}: a held buffer cannot use a pilot")
         why = entry.get("why")
         if not isinstance(why, str) or not why.strip():
             raise OpsError(f"{where}: why must say, in one line, why this entry is here")
+        release_override = entry.get("release_override")
+        if release_override is not None:
+            if not isinstance(release_override, dict):
+                raise OpsError(f"{where}: release_override must be a mapping")
+            allowed = {"allow_shared_reservation", "authorized_by", "authorized_at", "reason"}
+            unknown = set(release_override) - allowed
+            if unknown:
+                raise OpsError(
+                    f"{where}: release_override has unknown field(s): "
+                    f"{', '.join(sorted(unknown))}"
+                )
+            if entry.get("want") != "submitted":
+                raise OpsError(f"{where}: release_override requires want: submitted")
+            if release_override.get("allow_shared_reservation") is not True:
+                raise OpsError(
+                    f"{where}: release_override must set allow_shared_reservation: true"
+                )
+            for field in ("authorized_by", "authorized_at", "reason"):
+                value = release_override.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise OpsError(f"{where}: release_override.{field} must be non-empty")
     return entries
 
 
 # ---------------------------------------------------------------- receipts
 
-RECEIPT_NAME = re.compile(r"^(?P<kind>pilot|formal(?:-retry\d+)?)-(?P<stamp>.+)\.json$")
+RECEIPT_NAME = re.compile(r"^(?P<kind>environment-acceptance|pilot|formal(?:-retry\d+)?)-(?P<stamp>.+)\.json$")
 
 
 def _receipt_kind(name: str) -> str:
@@ -135,37 +159,61 @@ def tracked_receipts(batch: str, repo_root: Path) -> list[Path]:
     return sorted((repo_root / RESULTS_ROOT / batch).glob("*.json"))
 
 
-def _bundle_status(repo_root: Path, batch: str, cell: str) -> dict[str, Any] | None:
-    status = repo_root / RESULTS_ROOT / batch / cell / STATUS
-    if not status.is_file():
-        return None
-    try:
-        data = json.loads(status.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+def _bundle_status(
+    repo_root: Path, batch: str, cell: str, job_id: str | None = None
+) -> dict[str, Any] | None:
+    batch_dir = repo_root / RESULTS_ROOT / batch
+    candidates = [batch_dir / cell / STATUS, *sorted(batch_dir.glob(f"{cell}.j*/{STATUS}"))]
+    for status in candidates:
+        if not status.is_file():
+            continue
+        try:
+            data = json.loads(status.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if job_id is None or str(data.get("job_id")) == str(job_id):
+            return data
+    return None
+
+
+def _status_eligible(status: dict[str, Any]) -> bool:
+    """Whether a harvested result may drive a scientific decision.
+
+    ``eligible`` is additive to the original status schema.  Older bundles did
+    not carry it, so preserve their old meaning unless they explicitly carry a
+    quarantine marker.
+    """
+    if "eligible" in status:
+        return status.get("eligible") is True
+    return status.get("complete") is True and status.get("quarantined") is not True
 
 
 # ------------------------------------------------------------------ the plan
 
 @dataclass(frozen=True)
 class Action:
-    kind: str  # submit | copy_receipt | cancel | harvest | wait | blocked
+    kind: str  # submit | release | copy_receipt | cancel | harvest | wait | blocked
     batch: str
     detail: str
     cell: str | None = None
     job_id: str | None = None
     manifest: str | None = None
     pilot: bool = False
+    keep_held: bool = False
     receipt: str | None = None  # receipt file name within the batch, or a source path for copy_receipt
     job_name: str | None = None
     state: str | None = None
+    allow_shared_reservation: bool = False
+    release_authorization: str | None = None
 
     def line(self) -> str:
         where = f"{self.batch}/{self.cell}" if self.cell else self.batch
         job = f" job={self.job_id}" if self.job_id else ""
         pilot = " (pilot)" if self.pilot else ""
-        return f"{self.kind} {where}{job}{pilot}: {self.detail}"
+        held = " (held)" if self.keep_held else ""
+        return f"{self.kind} {where}{job}{pilot}{held}: {self.detail}"
 
 
 def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
@@ -186,7 +234,7 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
             for job in receipt["jobs"]:
                 states.setdefault(job["job_id"], job_state(job["job_id"]))
         for name, receipt in receipts:
-            if receipt.get("state") != "submitted":
+            if receipt.get("state") not in ("submitted", "held"):
                 failure = receipt.get("failure") or {}
                 actions.append(Action(
                     "blocked", batch,
@@ -196,8 +244,10 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
             for job in receipt["jobs"]:
                 state = states[job["job_id"]]
                 if state in TERMINAL_STATES:
-                    status = _bundle_status(repo_root, batch, job["cell_id"])
-                    if status is None or status.get("job_id") != job["job_id"]:
+                    status = _bundle_status(
+                        repo_root, batch, job["cell_id"], job["job_id"]
+                    )
+                    if status is None:
                         actions.append(Action("harvest", batch, state, cell=job["cell_id"],
                                               job_id=job["job_id"], receipt=name,
                                               job_name=job.get("job_name"), state=state))
@@ -217,7 +267,51 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                             f"{state}; a cell that has started is never cancelled by the operator",
                             cell=job["cell_id"], job_id=job["job_id"], state=state))
             continue
-        if any(_receipt_kind(name).startswith("formal") for name, _ in receipts):
+        formal_receipts = [
+            (name, receipt)
+            for name, receipt in receipts
+            if (_receipt_kind(name) == ptb_environment.KIND if ptb_environment.is_operation(manifest)
+                else _receipt_kind(name).startswith("formal"))
+        ]
+        if formal_receipts:
+            held_receipts = [
+                (name, receipt)
+                for name, receipt in formal_receipts
+                if receipt.get("state") == "held"
+            ]
+            if entry["want"] == "submitted" and held_receipts:
+                name, _ = held_receipts[-1]
+                release_override = entry.get("release_override") or {}
+                authorization = None
+                if release_override:
+                    authorization = (
+                        f"authorized_by={release_override['authorized_by']}; "
+                        f"authorized_at={release_override['authorized_at']}; "
+                        f"reason={release_override['reason']}"
+                    )
+                actions.append(
+                    Action(
+                        "release",
+                        batch,
+                        "ownership and frozen placement must pass before release",
+                        receipt=name,
+                        allow_shared_reservation=bool(
+                            release_override.get("allow_shared_reservation")
+                        ),
+                        release_authorization=authorization,
+                    )
+                )
+            continue
+        if entry["want"] == "held":
+            actions.append(
+                Action(
+                    "submit",
+                    batch,
+                    "maintain the user-required held pending buffer",
+                    manifest=entry["manifest"],
+                    keep_held=True,
+                )
+            )
             continue
         if entry.get("pilot") == "first":
             pilots = [(name, r) for name, r in receipts if _receipt_kind(name) == "pilot"]
@@ -231,15 +325,20 @@ def plan(entries: list[dict[str, Any]], repo_root: Path) -> list[Action]:
                 actions.append(Action("wait", batch, f"pilot is {states[unfinished[0]['job_id']]}",
                                       cell=unfinished[0]["cell_id"], job_id=unfinished[0]["job_id"]))
                 continue
-            statuses = [(j, _bundle_status(repo_root, batch, j["cell_id"])) for j in pilot["jobs"]]
+            statuses = [
+                (j, _bundle_status(repo_root, batch, j["cell_id"], j["job_id"]))
+                for j in pilot["jobs"]
+            ]
             if any(s is None or s.get("job_id") != j["job_id"] for j, s in statuses):
                 actions.append(Action("wait", batch, "pilot finished; its harvest comes first"))
                 continue
-            if not all(s.get("complete") for _, s in statuses):
+            if not all(_status_eligible(s) for _, s in statuses):
                 actions.append(Action("blocked", batch,
-                                      "pilot did not validate; the planner decides what happens"))
+                                      "pilot did not validate as eligible; the planner decides what happens"))
                 continue
-        actions.append(Action("submit", batch, "formal cells", manifest=entry["manifest"]))
+        actions.append(Action("submit", batch,
+                              "environment acceptance" if ptb_environment.is_operation(manifest) else "formal cells",
+                              manifest=entry["manifest"], keep_held=ptb_environment.is_operation(manifest)))
     return actions
 
 
@@ -307,6 +406,8 @@ def harvest_job(
     job_name: str | None = None,
     state: str | None = None,
     slurm_log_dir: Path | None = None,
+    expected_nodes: set[str] | None = None,
+    expected_task: str | None = None,
 ) -> dict[str, Any]:
     """Copy the small, readable part of one cell's result into ``out_dir``; write status.json.
 
@@ -335,7 +436,10 @@ def harvest_job(
         "slurm_state": state,
         "result_dir": str(result_dir) if result_dir else None,
         "complete": False,
+        "eligible": False,
         "issues": [],
+        "quarantined": False,
+        "quarantine_reasons": [],
         "accuracy": None,
         "stderr": None,
         "judge_flags": [],
@@ -373,11 +477,35 @@ def harvest_job(
                 except (OSError, ValueError):
                     pass
         metrics = ptb_results._read_json(result_dir / "metrics.json")
+        try:
+            status["official_evidence_retention"] = ptb_evidence_retention.preserve_official_evidence(
+                result_dir, out_dir
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            # Retention failure is observable, but must not suppress the original
+            # scientific verdict, judge flags, placement or failed-job evidence.
+            status["official_evidence_retention"] = {
+                "state": "failed", "errors": [{"error": str(exc)}]
+            }
         if isinstance(metrics.get("accuracy"), (int, float)):
             status["accuracy"] = metrics["accuracy"]
             status["stderr"] = metrics.get("stderr")
-        status["issues"] = audit_result(result_dir)
+        status["issues"] = audit_result(result_dir, expected_task=expected_task)
+        if expected_nodes:
+            provenance = ptb_results._read_json(result_dir / "runtime_provenance.json")
+            actual_node = str((provenance.get("slurm") or {}).get("node", ""))
+            if not actual_node:
+                status["quarantine_reasons"].append(
+                    "runtime Slurm node is missing from provenance"
+                )
+            elif actual_node not in expected_nodes:
+                status["quarantine_reasons"].append(
+                    f"runtime Slurm node {actual_node} is outside frozen site nodes "
+                    f"{','.join(sorted(expected_nodes))}"
+                )
         status["complete"] = not status["issues"]
+        status["quarantined"] = bool(status["quarantine_reasons"])
+        status["eligible"] = status["complete"] and not status["quarantined"]
         status["judge_flags"] = ptb_results.judge_flags(result_dir)
     else:
         status["issues"] = ["result directory not found"]
@@ -394,9 +522,11 @@ def harvest_job(
 
 def _scancel_command(job_id: str) -> list[str]:
     env = ptb.read_ptb_env()
+    # Keep the state filter in the controller request, not only our earlier read.
+    command = ["scancel", "--ctld", "--state=PENDING", job_id]
     if env.get("POST_TRAIN_BENCH_SLURM_SUBMIT_AS_ROOT") == "1":
-        return ["sudo", "scancel", job_id]
-    return ["scancel", job_id]
+        return ["sudo", *command]
+    return command
 
 
 def cancel_job(receipt_path: Path, cell: str, reason: str) -> dict[str, Any]:
@@ -412,8 +542,15 @@ def cancel_job(receipt_path: Path, cell: str, reason: str) -> dict[str, Any]:
     done = subprocess.run(_scancel_command(job["job_id"]), text=True, capture_output=True, check=False)
     if done.returncode:
         raise OpsError(f"scancel {job['job_id']} failed: {done.stderr.strip()}")
+    state_after = job_state(job["job_id"])
+    if state_after != "CANCELLED":
+        raise OpsError(
+            f"pending-only cancellation requested for {job['job_id']}, but observed "
+            f"{state_after}; cancellation is not confirmed and is not recorded as success"
+        )
     record = {"cell_id": cell, "job_id": job["job_id"], "reason": reason,
-              "state_before": state, "at": _now()}
+              "state_before": state, "state_after": state_after,
+              "pending_only": True, "at": _now()}
     receipt.setdefault("cancellations", []).append(record)
     receipt.pop("_path", None)
     receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
@@ -425,6 +562,99 @@ def cancel_job(receipt_path: Path, cell: str, reason: str) -> dict[str, Any]:
 def _worktree_dirty(repo_root: Path) -> str:
     return subprocess.run(["git", "status", "--porcelain"], cwd=repo_root, text=True,
                           capture_output=True, check=False).stdout.strip()
+
+
+def _submission_ownership_issue() -> str | None:
+    registry = ptb.read_ptb_env().get("POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY", "")
+    if not registry:
+        return None
+    try:
+        snapshot = ownership_snapshot(Path(registry))
+    except (OSError, slurm_queue.QueueError) as exc:
+        return f"cannot inspect ownership registry: {exc}"
+    if snapshot.get("ownership_ok"):
+        return None
+    parts = []
+    for key, label in (
+        ("unknown_jobs", "unknown job(s)"),
+        ("name_mismatches", "name mismatch(es)"),
+        ("placement_violations", "placement violation(s)"),
+        ("capacity_violations", "capacity violation(s)"),
+    ):
+        if snapshot.get(key):
+            parts.append(f"{len(snapshot[key])} {label}")
+    return "OWNERSHIP FAIL: " + (", ".join(parts) or "see gangda-slurm-queue")
+
+
+def harvest_environment(receipt: dict, job: dict, out_dir: Path, *, state: str | None,
+                        slurm_log_dir: Path | None = None) -> dict:
+    """Retain a probe attempt without asking a scientific validator to score it."""
+    status = harvest_job(None, out_dir, batch=receipt["batch_id"], cell=job["cell_id"],
+                         job_id=str(job["job_id"]), job_name=job.get("job_name"), state=state,
+                         slurm_log_dir=slurm_log_dir)
+    status.update(scientific_result=False, complete=False, eligible=False,
+                  acceptance_state="failed", acceptance_errors=[])
+    errors = status["acceptance_errors"]
+    try:
+        root = ptb_environment.report_directory(receipt, job)
+        status["environment_result_dir"] = str(root)
+        target = out_dir / "environment"
+        target.mkdir()
+        # Preserve failed/interrupted logs too, independent of a successful report.
+        for directory, dirs, files in os.walk(root, followlinks=False,
+                                             onerror=lambda exc: errors.append(str(exc))):
+            for dirname in list(dirs):
+                if (Path(directory) / dirname).is_symlink():
+                    dirs.remove(dirname)
+                    errors.append("symlink environment directory refused")
+            for filename in files:
+                relative = (Path(directory) / filename).relative_to(root)
+                if relative.suffix not in {".json", ".jsonl", ".txt", ".log", ".out", ".err", ".eval", ".gz"}:
+                    errors.append(f"unsupported environment artifact: {relative}")
+                    continue
+                try:
+                    raw = ptb_environment._read_regular(root, relative.as_posix())
+                    destination = target / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(raw)
+                except (OSError, ValueError) as exc:
+                    errors.append(str(exc))
+        site_nodes = ptb._expanded_nodes(str(receipt.get("site", {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", "")))
+        report = ptb_environment.validate_acceptance(
+            receipt, job, site_nodes=site_nodes, expected_uid=receipt.get("environment_uid"),
+            directory=target)
+        if state != "COMPLETED":
+            errors.append(f"environment scheduler state is {state}, expected COMPLETED")
+        if not errors:
+            status["acceptance_state"] = "passed"
+            status["accepted_node"] = report["node"]
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        errors.append(str(exc))
+    (out_dir / STATUS).write_text(json.dumps(status, indent=2) + "\n")
+    return status
+
+
+def _receipt_expected_nodes(receipt_path: Path) -> set[str]:
+    receipt = ptb.load_receipt(receipt_path)
+    nodelist = str((receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", ""))
+    if not nodelist:
+        return set()
+    result = subprocess.run(
+        ["scontrol", "show", "hostnames", nodelist],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise OpsError(
+            f"cannot expand frozen Slurm nodelist {nodelist}: "
+            f"{result.stderr.strip() or 'scontrol failed'}"
+        )
+    try:
+        return ptb_environment.effective_nodes(receipt, {
+            line.strip() for line in result.stdout.splitlines() if line.strip()})
+    except ptb_environment.EnvironmentError as exc:
+        raise OpsError(str(exc)) from exc
 
 
 def _log(repo_root: Path, line: str) -> None:
@@ -445,31 +675,77 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
     """
     written: list[str] = []
     submits = [a for a in actions if a.kind == "submit"]
-    others = [a for a in actions if a.kind not in ("submit", "wait", "blocked")]
+    runnable_submits = [a for a in submits if not a.keep_held]
+    held_submits = [a for a in submits if a.keep_held]
+    releases = [a for a in actions if a.kind == "release"]
+    others = [a for a in actions if a.kind not in ("submit", "release", "wait", "blocked")]
+    if (runnable_submits or releases) and (ownership_issue := _submission_ownership_issue()):
+        line = f"blocked submit: {ownership_issue}"
+        _log(repo_root, line)
+        written.append(line)
+        runnable_submits = []
+        releases = []
+    submits = held_submits + runnable_submits
     if submits and (dirty := _worktree_dirty(repo_root)):
         line = f"blocked submit: the worktree is not clean; commit first\n    {dirty.splitlines()[0]} ..."
         _log(repo_root, line)
         written.append(line)
         submits = []
+    submit_outcomes: list[tuple[Action, Path | None, ptb.ExperimentError | None]] = []
     for action in submits:
         manifest = ptb.load_manifest(repo_root / str(action.manifest))
         try:
-            receipt_path = submit_batch(manifest, pilot=action.pilot)
+            receipt_path = submit_batch(
+                manifest, pilot=action.pilot, keep_held=action.keep_held
+            )
         except ptb.ExperimentError as exc:
+            submit_outcomes.append((action, None, exc))
+        else:
+            submit_outcomes.append((action, Path(receipt_path), None))
+    # Do not dirty the source tree until every source-frozen submit has run.
+    # Copying the first receipt or writing its blocked.md inside the loop would
+    # make the second otherwise-independent submit fail its clean-tree gate.
+    for action, receipt_path, error in submit_outcomes:
+        if error is not None:
             blocked = repo_root / RESULTS_ROOT / action.batch / "blocked.md"
             blocked.parent.mkdir(parents=True, exist_ok=True)
-            blocked.write_text(f"# {action.batch}: submission blocked\n\n{_now()}\n\n```\n{exc}\n```\n",
+            blocked.write_text(f"# {action.batch}: submission blocked\n\n{_now()}\n\n```\n{error}\n```\n",
                                encoding="utf-8")
-            line = f"blocked submit {action.batch}{' (pilot)' if action.pilot else ''}: {str(exc).splitlines()[0]}"
+            line = f"blocked submit {action.batch}{' (pilot)' if action.pilot else ''}: {str(error).splitlines()[0]}"
             _log(repo_root, line)
             written.append(line)
             continue
+        assert receipt_path is not None
         dst = repo_root / RESULTS_ROOT / action.batch / Path(receipt_path).name
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(receipt_path, dst)
         jobs = ptb.load_receipt(dst)["jobs"]
-        line = (f"submit {action.batch}{' (pilot)' if action.pilot else ''}: "
+        line = (f"submit {action.batch}"
+                f"{' (pilot)' if action.pilot else ''}"
+                f"{' (held)' if action.keep_held else ''}: "
                 f"{len(jobs)} job(s) {','.join(j['job_id'] for j in jobs)} -> {dst.relative_to(repo_root)}")
+        _log(repo_root, line)
+        written.append(line)
+    for action in releases:
+        source = paths.data_root() / "ptb" / "batches" / action.batch / str(action.receipt)
+        tracked = repo_root / RESULTS_ROOT / action.batch / str(action.receipt)
+        receipt_path = source if source.is_file() else tracked
+        try:
+            receipt = release_batch(
+                receipt_path,
+                allow_shared_reservation=action.allow_shared_reservation,
+                authorization=action.release_authorization,
+            )
+        except ptb.ExperimentError as exc:
+            line = f"blocked release {action.batch}: {str(exc).splitlines()[0]}"
+        else:
+            tracked.parent.mkdir(parents=True, exist_ok=True)
+            if receipt_path != tracked:
+                shutil.copy2(receipt_path, tracked)
+            line = (
+                f"release {action.batch}: {len(receipt['jobs'])} held job(s) "
+                f"{','.join(str(job['job_id']) for job in receipt['jobs'])}"
+            )
         _log(repo_root, line)
         written.append(line)
     for action in others:
@@ -484,17 +760,40 @@ def apply(actions: list[Action], repo_root: Path) -> list[str]:
             try:
                 record = cancel_job(receipt_path, str(action.cell), action.detail)
             except OpsError as exc:
-                line = f"cancel {action.batch}/{action.cell} job={action.job_id} did not happen: {exc}"
+                line = f"cancel {action.batch}/{action.cell} job={action.job_id} not confirmed: {exc}"
             else:
                 line = f"cancel {action.batch}/{action.cell} job={record['job_id']} ({record['state_before']}): {action.detail}"
         elif action.kind == "harvest":
-            result_dir = result_for_job(str(action.job_id))
             out_dir = repo_root / RESULTS_ROOT / action.batch / str(action.cell)
+            receipt_path = repo_root / RESULTS_ROOT / action.batch / str(action.receipt)
+            loaded_receipt = ptb.load_receipt(receipt_path)
+            if ptb_environment.is_operation(loaded_receipt):
+                job = next(j for j in loaded_receipt["jobs"] if str(j["job_id"]) == str(action.job_id)
+                           and str(j["cell_id"]) == str(action.cell))
+                status = harvest_environment(loaded_receipt, job, out_dir, state=action.state,
+                                             slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
+                line = f"harvest {action.batch}/{action.cell} job={action.job_id}: environment {status['acceptance_state']} (not scientific)"
+                _log(repo_root, line)
+                written.append(line)
+                continue
+            result_dir = result_for_job(str(action.job_id))
+            try:
+                expected_task = ptb.receipt_task(ptb.load_receipt(receipt_path), str(action.job_id), str(action.cell))
+            except (ptb.ExperimentError, OSError, ValueError):
+                expected_task = None  # Preserve artifacts, but completion must fail closed.
             status = harvest_job(result_dir, out_dir, batch=action.batch, cell=str(action.cell),
                                  job_id=str(action.job_id), job_name=action.job_name,
-                                 state=action.state, slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
-            verdict = "complete" if status["complete"] else f"incomplete ({len(status['issues'])} issue(s))"
-            flags = ",".join(status["judge_flags"]) or "clean"
+                                 state=action.state, slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm",
+                                 expected_nodes=_receipt_expected_nodes(receipt_path), expected_task=expected_task)
+            if status["quarantined"]:
+                verdict = f"quarantined ({len(status['quarantine_reasons'])} reason(s))"
+            elif status["complete"]:
+                verdict = "complete"
+            else:
+                verdict = f"incomplete ({len(status['issues'])} issue(s))"
+            flags = ",".join(status["judge_flags"]) or (
+                "clean" if status["complete"] else "judges-unverified"
+            )
             acc = "" if status["accuracy"] is None else f" acc={status['accuracy']:.4f}"
             line = f"harvest {action.batch}/{action.cell} job={action.job_id} {action.state}{acc} {verdict} {flags}"
         else:  # pragma: no cover - plan only emits the kinds above
@@ -528,12 +827,36 @@ def reconcile_cli(args) -> int:
 
 def harvest_cli(args) -> int:
     out = paths.REPO_ROOT / RESULTS_ROOT / args.batch / args.cell if args.out is None else Path(args.out)
+    matches = []
+    for path in (paths.REPO_ROOT / RESULTS_ROOT / args.batch).glob("*.json"):
+        try:
+            receipt = ptb.load_receipt(path)
+            if receipt.get("batch_id") != args.batch:
+                continue
+            task = ptb.receipt_task(receipt, str(args.job), str(args.cell))
+            matches.append((path, task))
+        except (ptb.ExperimentError, OSError, ValueError):
+            continue
+    if len(matches) == 1:
+        receipt = ptb.load_receipt(matches[0][0])
+        if ptb_environment.is_operation(receipt):
+            job = next(j for j in receipt["jobs"] if str(j["job_id"]) == str(args.job)
+                       and str(j["cell_id"]) == str(args.cell))
+            status = harvest_environment(receipt, job, out, state=args.state,
+                                         slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
+            print(f"wrote {out / STATUS}: environment {status['acceptance_state']} (not scientific)")
+            return 0 if status["acceptance_state"] == "passed" else 1
+    expected_task = matches[0][1] if len(matches) == 1 else None
+    expected_nodes = _receipt_expected_nodes(matches[0][0]) if len(matches) == 1 else None
     status = harvest_job(Path(args.result_dir) if args.result_dir else None, out, batch=args.batch,
                          cell=args.cell, job_id=args.job, job_name=args.job_name, state=args.state,
-                         slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm")
-    print(f"wrote {out / STATUS}: {'complete' if status['complete'] else 'incomplete'}, "
+                         slurm_log_dir=ptb.PTB_ROOT / "logs" / "slurm",
+                         expected_task=expected_task, expected_nodes=expected_nodes)
+    verdict = ("quarantined" if status["quarantined"] else
+               "complete" if status["complete"] else "incomplete")
+    print(f"wrote {out / STATUS}: {verdict}, "
           f"{len(status['skipped'])} file(s) listed but not copied")
-    return 0 if status["complete"] else 1
+    return 0 if status["eligible"] else 1
 
 
 def cancel_cli(args) -> int:

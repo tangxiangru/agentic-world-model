@@ -1,0 +1,192 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T12:20:45Z'
+situation:
+  elapsed_h: 0.55
+  remaining_h: 0.45
+  incumbent:
+    ref: exp-01
+    path: /home/ben/task/out_sft
+    score:
+      metric: accuracy
+      value: 0.3267
+      protocol_n: 150
+  trigger: >-
+    exp-01 (1 epoch) scored 0.3267 vs the base model's 0.04 and took only 4.1 minutes of the
+    1h budget, so the format problem is solved and there is wall-clock left to spend on more
+    gradient steps over the same data.
+  trigger_evidence:
+    - path: /home/ben/task/eval_sft.json
+      locator: whole file
+    - path: /home/ben/task/train.log
+      locator: last 3 lines
+  alternatives_rejected:
+    - option: Full-parameter SFT instead of LoRA
+      reason: same as exp-01, and with ~25 minutes left a change of method is not affordable; more epochs is the cheapest remaining lever.
+    - option: RFT on rationales sampled from the exp-01 checkpoint, filtered by answer correctness
+      reason: the right next step and now possible since exp-01 follows the format, but sampling + filtering + retraining does not fit in the ~25 minutes left.
+    - option: raise LoRA rank or lr instead of epochs
+      reason: one variable at a time; epochs is the lever with the most headroom at 1 epoch and loss still ~0.5.
+    - option: MetaMathQA or similar augmented math corpora
+      reason: they carry their own "#### N" and \boxed markers (pitfall double_answer_format) and are far larger than the time budget allows.
+  pitfalls_hit:
+    - {what: "OOM at 8192 tokens/batch - Gemma-3's 262k-vocab logits.float() alone wanted 7.8 GiB", cost_h: 0.05, fix: "TOK_PER_BATCH 3072 + grad accum 3 + gradient checkpointing + expandable_segments"}
+    - {what: "background training killed twice when the launching Bash tool call timed out", cost_h: 0.13, fix: "launch with setsid and a detached background tool call"}
+    - {what: "/home/ben/awm vanished mid-session with a stale NFS file handle, so exp_protocol lock/check/close could not be run after exp-01's first lock attempt", cost_h: 0.03, fix: "none available; cards written and preflight verified by hand instead"}
+  smoke_runs: []
+problem:
+  statement: >-
+    exp-01 stopped after a single pass over 7463 examples (520 padded batches, ~173 optimizer
+    steps) with training loss still around 0.4-0.5 and no sign of a plateau, so the adapter is
+    very likely undertrained rather than converged; 0.3267 is a one-epoch number, not a
+    recipe ceiling.
+  evidence:
+    - path: /home/ben/task/train.log
+      locator: step 400-520
+      observation: loss still fluctuating around 0.38-0.68 at the end of the single epoch, no plateau
+    - path: /home/ben/task/eval_sft.json
+      locator: whole file
+      observation: accuracy 0.3267 (stderr 0.038) after one epoch
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: >-
+    Training the identical exp-01 recipe for 3 epochs instead of 1 raises gsm8k accuracy above
+    exp-01's 0.3267 on the same 150-item official eval.
+  mechanism: >-
+    A rank-32 adapter over 7463 examples is far from saturated after ~173 optimizer steps; more
+    passes let it fit the GSM8K rationale distribution more closely, which past SFT practice on
+    this dataset says buys accuracy before overfitting sets in around 3 epochs.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-01
+    magnitude: modest; a few points, well within the risk of being invisible at n=150 (stderr ~0.038)
+  falsified_if: >-
+    The 3-epoch checkpoint scores at or below exp-01's 0.3267 on the same 150-item official eval.
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/train_data.jsonl
+      source: openai/gsm8k (config main, split train)
+      n_examples: 7463
+      built_by: /home/ben/task/build_data.py
+      build_command:
+        - python
+        - build_data.py
+      selection: >-
+        GSM8K train split only; the test split is never read. The 10 items the grader uses as
+        few-shot exemplars are removed. Calculator annotations <<...>> are stripped from the
+        reference rationale and thousands separators removed from the final number, so the target
+        is "<rationale>\n\nANSWER: <n>" with exactly one answer marker. 20% of rows carry the
+        grader's exact 10-shot system message so the model also sees the test-time context.
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 + peft 0.18.1, hand-rolled loop, completion-only loss
+    peft: LoRA r=32 alpha=64 targets=q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj (vision tower excluded)
+    hyperparams:
+      lr: 0.0001
+      epochs: 3.0
+      batch_size: 0  # dynamic: ~3072 tokens per micro-batch, length-bucketed
+      grad_accum: 3
+      max_seq_len: 2048
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: bfloat16
+      seed: 0
+    target_format: "<rationale>\n\nANSWER: <int><end_of_turn>\n inside the gemma3.jinja model turn"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+      - python
+      - train_sft.py
+      - out_sft2
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {EPOCHS: '3.0', MAX_MIN: '11', PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True}
+    log: /home/ben/task/train2.log
+  output_dir: /home/ben/task/out_sft2
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: 1x H100 80GB
+    planned_h: 0.2
+evaluation:
+  protocol:
+    command:
+      - python
+      - evaluate.py
+      - --model-path
+      - out_sft2
+      - --limit
+      - '150'
+      - --max-connections
+      - '8'
+      - --json-output-file
+      - eval_sft2.json
+    dev_set: official --limit 150
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-01
+    value: 0.3267
+    path: /home/ben/task/eval_sft.json
+  diagnostic:
+    what: 'share of completions ending in <end_of_turn> with exactly one ANSWER marker line'
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.21
+  output_checkpoint: /home/ben/task/out_sft2
+  checkpoints_kept:
+    - {path: /home/ben/task/out_sft2, step: 1440}
+    - {path: /home/ben/task/final_model, step: 1440}
+  training_summary:
+    final_loss: 0.308
+    steps: 1440
+    notes: >-
+      The MAX_MIN=11 wall-clock cap fired at step ~1440 of 1560, so this is ~2.8 epochs rather
+      than the 3.0 the card declared. Loss fell steadily from ~0.55 (epoch 1) to ~0.31 (end),
+      against exp-01's ~0.49 at the same recipe's single-epoch end. Adapter merged and saved with
+      tokenizer and processor.
+      NOTE ON PROTOCOL: `awm exp_protocol lock` was unavailable for this card - /home/ben/awm was
+      lost to a stale NFS file handle during exp-01 and never came back, so neither check, lock,
+      nor close could be run. Sections 0-4 were written before the launch command ran and the
+      mechanical preflight conditions were verified by hand: the data file is byte-identical to
+      exp-01's (already contamination-checked and stop-token-checked), the comparator was scored
+      under the identical n=150 protocol, and the training prefix was confirmed byte-for-byte
+      against templates/gemma3.jinja.
+  measurements:
+    - {metric: accuracy, value: 0.4533, n: 150, path: /home/ben/task/eval_sft2.json, delta_vs_comparator: 0.1266}
+  diagnostic_result:
+    value: null
+    path: null
+    notes: not measured
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: not_tested
+  summary: >-
+    ~2.8 epochs of the identical exp-01 recipe scored 0.4533 at n=150 against exp-01's 0.3267
+    under the same protocol, +0.127 - about 3x the 0.041 stderr, so the one-epoch adapter was
+    clearly undertrained rather than at the recipe's ceiling. Training loss fell 0.49 -> 0.31
+    over the extra passes with no sign yet of the overfitting that would show as a score drop.
+  decision: adopt
+  next_step: >-
+    Copied to /home/ben/task/final_model as the submitted model. The curve has not turned over,
+    so 4-6 epochs is the cheapest untested lever; after that, RFT on rationales sampled from this
+    checkpoint and filtered by answer correctness, and a larger eval n - at n=150 a stderr of
+    0.041 cannot resolve anything smaller than about 8 points.

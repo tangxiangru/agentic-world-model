@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-04T03:26:20Z'
+situation:
+  elapsed_h: 7.8
+  remaining_h: 2.2
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7157, protocol_n: 1319}
+  trigger: "Every graded prompt carries a 10-shot system message, but only 10% of the rows exp-04 trained on did (another 10% had 4 shots, 80% none). exp-07's next_step named this as the one lever nobody has pulled, and a shippable model is already packaged and verified, so the downside of testing it is time only."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-07.yaml, locator: "conclusion.next_step"}
+    - {path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py, locator: "task gsm8k(fewshot=10, fewshot_seed=42)", observation: "the 10-shot system message is not optional in the harness"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "situation.pitfalls_hit[1]", observation: "zero-shot sampling from exp-04 solved only 29-52% of problems it should find easy, while the same weights score 73% on the 10-shot graded prompt - weak evidence that this model leans on the prefix"}
+  alternatives_rejected:
+    - {option: "Ship exp-04/final and stop", reason: "2.2 h left and the artefact is already packaged and verified; a bounded-downside experiment is free apart from the clock"}
+    - {option: "A third epoch on sft_v2 as it stands", reason: "it changes the amount of the same thing rather than testing anything; exp-04's second epoch was already only +1.2"}
+    - {option: "Retrain from base with the new few-shot mix", reason: "2 h of training; there would be no time left to evaluate it on 1319 items or to repackage"}
+    - {option: "All 89.6k rows re-rendered at 60% ten-shot", reason: "a 10-shot row is ~2300 tokens, so the corpus would be 145M tokens (~3 h); 20k rows is the 34-minute version of the same test"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/fewshot_mix.jsonl, --output-dir, /tmp/x, --dry-run], outcome: "28.1M tokens, p50 length 1719, 1 of 20000 rows over max_seq_len, every target ends in <end_of_turn>"}
+    - {command: [python, /home/ben/contamination_check.py, --reference, /home/ben/test_data.json, --input, data/fewshot_mix.decon.jsonl], outcome: "20000 documents scanned, 0 contaminated, exit 0"}
+problem:
+  statement: "The model is trained almost entirely on bare 'solve this problem' prompts and graded entirely on prompts that open with ten worked GSM8K examples written in a different style (terse, with <<..>> calculator spans) from the 405B prose it was trained to imitate. Nothing in the session has measured what that prefix does to it."
+  evidence:
+    - {path: /home/ben/task/data/sft_v2.jsonl, locator: "n_shot field", observation: "80% of rows are zero-shot, 10% 4-shot, 10% 10-shot"}
+    - {path: /home/ben/task/analysis/exp-04_final_g500_diag.json, locator: "graded_accuracy 0.728", observation: "the graded number is always measured under the 10-shot prefix"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continuing exp-04/final for one epoch at lr 5e-6 on 20k sft_v2 rows re-rendered so that 60% carry a 10-shot and 20% a 4-shot prefix raises greedy accuracy on the full 1319-item test set above exp-04/final's 0.7157."
+  mechanism: "The targets are unchanged - only the context they are conditioned on changes - so the gradient is entirely about producing this answer style while ten differently-styled exemplars sit in the context, which is exactly the condition every graded item is in and which the model has seen in only 1 row in 10."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-07
+    magnitude: "+1 to +3 points"
+  falsified_if: "full-1319 accuracy at or below 0.7157 + 0.015 (the run-to-run spread measured in exp-07 is about 1 point, so anything smaller than ~1.5 points is not a result); in that case final_model stays as exp-04/final."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/fewshot_mix.jsonl
+      source: "derived:exp-04 - 20000 rows resampled from data/sft_v2.jsonl (nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e) with fresh few-shot prefixes drawn from the openai/gsm8k TRAIN split"
+      n_examples: 20000
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v2.jsonl, --max-per-problem, '4', --max-per-problem-aug, '1', --n-gsm8k-src, '30000', --n-aug-src, '60000', --seed, '1']
+      selection: "20000 rows sampled from sft_v2 with seed 21; questions and targets untouched; prefixes re-rolled to 12000 ten-shot, 4000 four-shot, 4000 zero-shot, each exemplar block built exactly like inspect_evals' sample_to_fewshot"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with liger-kernel 0.8.2 fused linear CE"
+    peft: none
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 32768, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0, max_bs: 96}
+    target_format: "unchanged from exp-04: templates/gemma3.jinja + inspect_evals' MATH_PROMPT_TEMPLATE; completion = solution, blank line, 'ANSWER: <int>', then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/fewshot_mix.jsonl, --parent, /home/ben/task/ckpts/exp-04/final, --output-dir, /home/ben/task/ckpts/exp-08, --epochs, '1', --lr, '5e-6', --token-budget, '32768', --max-bs, '96', --grad-accum, '2', --max-seq-len, '2816', --save-steps, '0', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/ckpts/exp-08
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+evaluation:
+  protocol:
+    command: [python, eval_model.py, --model-path, '{checkpoint}_greedy', --tag, '{tag}', --limit, '1319']
+    dev_set: "official inspect_evals/gsm8k test split --limit 1319 (whole split), greedy decoding via generation_config.json temperature 0.0"
+    n: 1319
+    seed: null
+  comparator:
+    ref: exp-07
+    value: 0.7157
+    path: /home/ben/task/eval/final_exp04_full1319.json
+  diagnostic:
+    what: "non-stop share and mean output length on the full test set; a model that has been pushed toward the terse exemplar style should get shorter, and that is the mechanism's fingerprint"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.54
+  output_checkpoint: /home/ben/task/ckpts/exp-08/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-08/final, step: 444}
+  training_summary: {final_loss: 0.2732, steps: 444, notes: "1943s wall, 14.5k tokens/s, 28.1M tokens, 1 epoch from exp-04/final"}
+  measurements:
+    - {metric: accuracy, value: 0.7096, n: 1319, path: /home/ben/task/eval/exp-08_full1319.json, delta_vs_comparator: -0.0061}
+  diagnostic_result:
+    value: 683.0
+    path: /home/ben/task/analysis/exp-08_full1319_diag.json
+    notes: "mean completion length 656 -> 683 characters, i.e. the model got slightly LONGER, not terser: it did not drift toward the exemplars' style. non_stop_share 0.0136 -> 0.0159. first_answer_line_accuracy 0.7157 -> 0.7089."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "Full-1319 accuracy 0.7157 -> 0.7096, below the pre-registered 0.7307 bar and slightly below the comparator itself. Raising the share of 10-shot training rows from 10% to 60% does not help, and the length diagnostic shows the model did not shift toward the exemplars at all, so exp-04 was evidently already conditioning on the prefix as well as it is going to."
+  decision: reject
+  next_step: "final_model stays as exp-04/final (0.7157 on the full test set, 0.7267 at --limit 150). Across exp-05, exp-06 and exp-08 nothing beat plain SFT data-scale; a session with more budget should test scale itself - the same recipe from base on 250k+ verified rows - rather than another post-hoc continuation."

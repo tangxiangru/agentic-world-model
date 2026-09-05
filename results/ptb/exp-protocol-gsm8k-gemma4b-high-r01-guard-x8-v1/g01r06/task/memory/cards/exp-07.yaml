@@ -1,0 +1,109 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T01:59:33Z'
+
+situation:
+  elapsed_h: 7.5
+  remaining_h: 2.5
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.71494, protocol_n: 1319}
+  trigger: "Every number in this batch was measured from a ckpts/ path, but the grader loads final_model/ with vLLM from a fresh process; the final_model_not_loadable pitfall is the one failure mode that would make all of it count for nothing, and it has not been checked."
+  trigger_evidence:
+    - {path: /home/ben/task/.claude/skills/exp_protocol/pitfalls.yaml, locator: "id: final_model_not_loadable"}
+    - {path: /home/ben/task/eval/exp-05_full.json, locator: "accuracy=0.71494 - measured from /home/ben/task/ckpts/exp-05/final, not from final_model/"}
+  alternatives_rejected:
+    - {option: "Trust the copy - final_model/ is a cp -r of a directory that already evaluated", reason: "a truncated copy, a missing tokenizer file or a config the grader's model_type sniffing reads differently all produce a clean-looking wrong answer, and this batch has already lost a run to a file that was silently null-filled on disk"}
+    - {option: "Verify with --limit 200 to save ten minutes", reason: "2.5 h remain and nothing else is queued; the full 1319 items make the verification a same-protocol reproduction of the shipped number rather than a separate, noisier measurement"}
+    - {option: "One more soup variant with the remaining time", reason: "exp-06 already showed the three-way dilutes, and a weighted sweep needs more full-test evals than the remaining margin allows once verification is done"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+problem:
+  statement: "final_model/ has never been loaded by anything. It is a copy of ckpts/exp-05/final made after that directory was evaluated, and the grader will find it by a different route than any eval in this batch used: evaluate.py's model_type() falls through the path-name checks for 'final_model' and reads config.json's architectures field instead, then hands vLLM a directory that must supply its own tokenizer, processor files and generation_config.json. None of that path has been exercised."
+  evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "L100-115 model_type(): 'gemma' is matched against the model path first, and only then against config['architectures'][0]", observation: "the string 'final_model' contains none of qwen/llama/gemma/smollm, so template selection depends on config.json being readable and naming Gemma3ForConditionalGeneration"}
+    - {path: /home/ben/task/eval/exp-05_full.json, locator: "the eval that produced 0.71494 used --model-path /home/ben/task/ckpts/exp-05/final", observation: "the shipped path is untested"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: "Loading final_model/ from a fresh process reproduces exp-05's full-test score, confirming the shipped directory is the artifact that was measured rather than a broken copy of it."
+  mechanism: "final_model/ is a byte copy of the evaluated checkpoint - the first safetensors shard has the same md5 (d4de0dc9860ed944f2230b95058a4e5c) - and it carries its own tokenizer, both processor configs and the greedy generation_config.json, so both the transformers CPU load and the grader's vLLM path have everything they need. If the score comes back at 0.71494 on the same 1319 items, the copy is sound and the template selection through config.json works."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "identical to exp-05's 0.71494; greedy decoding makes this a reproduction, not a re-measurement"}
+  falsified_if: "the CPU load raises, or the full-test score from final_model/ differs from 0.71494 by more than a rounding-level amount - either would mean the shipped directory is not the checkpoint that was measured."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: 'model-00001-of-00002.safetensors md5 d4de0dc9860ed944f2230b95058a4e5c'
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/eval_manifest.jsonl
+      source: "openai/gsm8k (test split, benchmark input only - never used for training)"
+      n_examples: 200
+      built_by: /home/ben/task/scripts/make_eval_manifest.py
+      build_command: [python, scripts/make_eval_manifest.py]
+      selection: "ids only, no question or answer text; carried from exp-01 for provenance. No training happens in this card and this file is not read by it."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "transformers 4.57.3 CPU load + inspect-ai/vllm 0.11.0 via evaluate.py"
+    peft: "none"
+    hyperparams: {lr: null, epochs: 0, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, final_model, --limit, '-1', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/final_model_full.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/eval_final_model_full.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, '-1', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, '{out}.json']
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items"
+    n: 1319
+    seed: 42
+  comparator: {ref: exp-05, value: 0.71494, path: /home/ben/task/eval/exp-05_full.json}
+  diagnostic:
+    what: "transformers CPU load of final_model/ from a fresh process: config, weights, tokenizer and generation_config all resolve"
+    n: 1
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.55
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 0}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 0}
+  training_summary: {final_loss: null, steps: 0, notes: "no training; verification only"}
+  measurements:
+    - {metric: accuracy, value: 0.70811, n: 1319, path: /home/ben/task/eval/final_model_full.json, delta_vs_comparator: -0.00683}
+    - {metric: accuracy, value: 0.70887, n: 1319, path: /home/ben/task/eval/final_model_full_rep2.json, delta_vs_comparator: -0.00607}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/logs/final_model_cpu_load.log
+    notes: "Fresh-process CPU load succeeds: config.json names Gemma3ForConditionalGeneration (so evaluate.py's model_type() selects templates/gemma3.jinja through the architectures branch, which is the branch the path name 'final_model' forces), GemmaTokenizerFast loads with 262145 tokens, 4,300,079,472 parameters materialise, generation_config.json reads back with temperature 0.0, and the tokenizer renders the grader's template as '<bos><start_of_turn>user\\nhi<end_of_turn>\\n<start_of_turn>model\\n'. All five key files (both safetensors shards, config.json, generation_config.json, tokenizer.json) are md5-identical to ckpts/exp-05/final."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "final_model/ loads from a fresh process and scores 0.7081 and 0.7089 on two full-test runs against the 0.7149 measured from ckpts/exp-05/final - the files are byte-identical, so the 9-item spread is vLLM run-to-run variation between server instances, not a broken copy. The shipped artifact is the checkpoint that was measured."
+  decision: adopt
+  next_step: "Nothing further. One correction this card forces on the batch record: greedy decoding under vLLM is not reproducible across server instances to better than ~0.7 points on 1319 items, so exp-05's 0.7149 was the high end of its own range. Re-running exp-03 gives 0.7089 against its original 0.7058, so over two runs each the soup averages 0.7106 (0.7149 / 0.7081 / 0.7089) and exp-03 averages 0.7074 - the soup is still ahead, and ahead by 2.8 points on the independent 250-item probe, so it ships; but the honest gap is smaller than one run suggested."

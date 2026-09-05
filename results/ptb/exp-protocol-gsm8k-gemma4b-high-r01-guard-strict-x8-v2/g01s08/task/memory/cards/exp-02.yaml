@@ -1,0 +1,115 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T10:16:48Z'
+
+# ---- 0. Situation (before) -------------------------------------------------
+situation:
+  elapsed_h: 0.5
+  remaining_h: 9.5
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0533, protocol_n: 150}
+  trigger: "exp-01 measured the base snapshot at 0.053 on dev-150; the inspect log shows it usually solves-then-keeps-generating (only 28/150 completions end in an ANSWER line, 71/150 hit the 4000-token cap), so the first intervention has to teach answer-then-stop on real GSM8K-style reasoning."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "whole file", observation: "graded 0.053; first-ANSWER-marker extraction would give 0.113; 18.7% of completions end in an ANSWER line"}
+  alternatives_rejected:
+    - {option: "Train on the 7.5k original GSM8K train CoTs only", reason: "too few rows to move a 4B model far; the human CoTs are terse and carry <<calculator>> annotations the grader does not need"}
+    - {option: "Use meta-math/MetaMathQA", reason: "older, weaker solutions, and its bodies carry a second answer marker ('The answer is: X') - the double_answer_format pitfall"}
+    - {option: "Include OpenMathInstruct-2's MATH subsets as well", reason: "off-distribution for GSM8K word problems; those tokens buy more gsm8k-style rows instead. Reconsider if exp-02 saturates"}
+    - {option: "LoRA instead of full fine-tuning", reason: "the 80GB H100 fits a full 4B fine-tune with 8-bit Adam and checkpointing (smoke: 15.6 samples/s); full FT is the stronger baseline and avoids adapter-merge loadability risk"}
+  pitfalls_hit:
+    - {what: "first smoke run OOMed in cross_entropy at bs 8 with no gradient checkpointing (fp32 master weights + 262k-vocab logits)", cost_h: 0.1, fix: "gradient checkpointing on, bs 16 x accum 2, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/sft_omi2_big.jsonl, --out, ckpts/smoke, --limit, '3000', --max-steps, '15', --bs, '4', --grad-accum, '8', --grad-checkpointing], outcome: "ran; 12.1 samples/s; loss 0.45 at step 10"}
+    - {command: [python, train_sft.py, --data, data/sft_omi2_big.jsonl, --out, ckpts/smoke, --limit, '8000', --max-steps, '12', --bs, '16', --grad-accum, '2', --grad-checkpointing], outcome: "ran; 15.6 samples/s; saved ckpts/smoke/final cleanly -> ~1.4h per 79k-row epoch"}
+
+# ---- 1. Problem (before) ---------------------------------------------------
+problem:
+  statement: "The base model has no answer-then-stop behaviour and weak GSM8K reasoning: under the official 10-shot harness it scores 0.053, and even reading the FIRST 'ANSWER:' marker it would only score 0.113. It needs both (a) to end its turn with <end_of_turn> right after a single 'ANSWER: N' line and (b) better step-by-step arithmetic on grade-school word problems."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diagnostic.json, locator: "whole file", observation: "0.053 graded / 0.113 first-marker / 0.187 end in an ANSWER line"}
+    - {path: /home/ben/task/logs/2026-09-03T09-56-42+00-00_gsm8k_Eqp8StLa3czKvyhRLyLQ7w.json, locator: "samples[*].output.choices[0].stop_reason", observation: "71/150 stop_reason=max_tokens; mean completion 6576 chars"}
+  affected_share: 0.947
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis (before) ------------------------------------------------
+hypothesis:
+  claim: "Completion-only SFT of the base snapshot on ~158k GSM8K-derived chain-of-thought solutions (OpenMathInstruct-2, gsm8k + augmented_gsm8k), rendered in the grader's own chat template with targets ending 'ANSWER: N<end_of_turn>', raises dev-150 accuracy far above the base model's 0.053."
+  mechanism: "Two things change at once: the model learns to terminate its turn right after one ANSWER line (removing the stop/format failure that costs about half the graded items), and it learns 405B-generated step-by-step solutions to 79k GSM8K-style problems, the standard recipe for lifting a small base model's word-problem accuracy."
+  expected_effect: {metric: accuracy, direction: higher, against: base_model, magnitude: "+40 to +60 points (expect 0.50-0.70)"}
+  falsified_if: "dev-150 accuracy below 0.35, or more than 10% of completions still fail to end in an 'ANSWER: N' line"
+
+# ---- 3. Setup (before) -----------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_omi2_x2.jsonl
+      source: "nvidia/OpenMathInstruct-2 (snapshot 469216e3f46f4dacf476b382e192485ea51a143e, shards 0-13 of 32)"
+      n_examples: 157765
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py, --out, data/sft_omi2_x2.jsonl, --max-per-problem, '2', --max-rows, '250000']
+      selection: "problem_source in {gsm8k, augmented_gsm8k}, both derived from the GSM8K TRAIN split; numeric expected_answer; exactly one \\boxed{} in the solution and it must equal expected_answer; the box is unwrapped in place and '\\n\\nANSWER: N<end_of_turn>' appended; rows already containing 'ANSWER:' or '####' dropped; completions over 400 tokens dropped; at most 2 solutions per unique problem"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, torch 2.8.0"
+    peft: "none (full fine-tune; vision tower and multimodal projector frozen - text-only data)"
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 16, grad_accum: 2, max_seq_len: 1024, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: "fp32 master weights + bf16 autocast, 8-bit AdamW, gradient checkpointing", seed: 0}
+    target_format: "prompt rendered with templates/gemma3.jinja (add_generation_prompt=True); target = solution body, blank line, 'ANSWER: N', then <end_of_turn>; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_omi2_x2.jsonl, --out, ckpts/exp-02, --bs, '16', --grad-accum, '2', --lr, '1e-5', --epochs, '1', --max-seq-len, '1024', --grad-checkpointing, --save-steps, '2000']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-02_train.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 2000
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 3.0}
+
+# ---- 4. Evaluation (before) ------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --json-output-file, '{out}.json']
+    dev_set: "official --limit 150 (first 150 items of openai/gsm8k test in harness order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0533
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "share of dev-150 completions that end in an 'ANSWER: N' line and stop before the token cap (format/stop compliance)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result (after) -----------------------------------------------------
+result:
+  execution: failed
+  wall_h: 0.05
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: 0.296, steps: 100, notes: "loss fell 0.60 -> 0.30 over the first 100 steps before the crash; the recipe itself was training normally"}
+  measurements: []
+  diagnostic_result: {value: null, path: null, notes: null}
+  watch_set_result: null
+  failure: "torch.OutOfMemoryError at step 100 in Gemma3ForConditionalGeneration.forward -> loss_fct(flat_logits, flat_labels): tried to allocate 8.44 GiB with 8.35 GiB free (70.83 GiB already in use). Cause: fp32 master weights (17.2G) + fp32 grads (17.2G) + 8-bit Adam (8.6G) leaves too little for the fp32 cross-entropy over a 262208-token vocabulary; with group_by_length the long-row batches (bs 16 x up to 675 tokens) need ~34 GiB of logits+grad. The two smoke runs never hit it because their --limit slices contained only short rows."
+
+# ---- 6. Conclusion (after) -------------------------------------------------
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: not_tested
+  summary: "Killed by an OOM in the loss at step 100 of 4931; no checkpoint, no measurement. The failure is a memory-configuration failure, not evidence about the hypothesis."
+  decision: iterate
+  next_step: "exp-03: same data and objective, bf16 weights instead of fp32 masters (frees 17 GiB) and bs 12 x accum 3 so the widest batch's fp32 logits fit; keep everything else identical."

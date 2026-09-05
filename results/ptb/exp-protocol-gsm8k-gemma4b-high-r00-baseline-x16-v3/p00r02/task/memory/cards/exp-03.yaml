@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T14:49:03Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 2.35
+  remaining_h: 7.65
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.6133, protocol_n: 150}
+  trigger: "The harness never sends a temperature: the request body captured in exp-01's log carries only max_tokens, so vLLM falls back to the checkpoint's own generation_config.json (do_sample true, top_k 64, top_p 0.95, vLLM temperature default 1.0). Every score so far was measured under temperature-1.0 sampling."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-01_base_dev150_log.json, locator: "samples[0] request body: model + max_tokens only, no temperature/top_p/top_k"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "L237 generation_config='auto'; L1344 get_diff_sampling_param", observation: "with 'auto' vLLM takes temperature/top_k/top_p from the model's generation_config.json as request defaults"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "inherited from the base snapshot: do_sample true, top_k 64, top_p 0.95"}
+  alternatives_rejected:
+    - {option: "Pass a temperature on the evaluate.py command line", reason: "evaluate.py exposes no such flag and rule 5 forbids editing it; the decoding default is a property of the checkpoint, which is the artefact I am allowed to change"}
+    - {option: "Leave sampling on and rely on more training to absorb the noise", reason: "training cannot recover a coin flip taken at decode time; this costs one 3-minute eval to settle"}
+    - {option: "Change max_tokens or add a repetition penalty in the same card", reason: "one card, one intervention - a combined change would not say which knob moved the number"}
+  pitfalls_hit: []
+  smoke_runs: []
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "exp-02 is graded under stochastic decoding (temperature 1.0, top_p 0.95, top_k 64) inherited from the base snapshot's generation_config.json. On a single-sample math benchmark that throws accuracy away: a chain of ~100 sampled tokens needs only one bad draw to derail the arithmetic."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev150_diag.json, locator: "metrics.accuracy=0.6133, stderr=0.0399", observation: "58 of 150 items wrong although 149/150 completions are well-formed and terminate, so the residual failures are slips of exactly the kind sampling noise adds to"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample/top_k/top_p", observation: "the file vLLM reads to fill in the unspecified sampling parameters"}
+  affected_share: null
+  failure_examples:
+    - {id: "exp-02 dev-150 incorrect set", source: /home/ben/task/analysis/exp-02_dev150_diag.json, question: "(58 gsm8k test items - text not copied, protocol rule 7)", gold: "various", model_output: "well-formed 'ANSWER: n' lines with the wrong n", failure: "arithmetic or reasoning slip under sampled decoding"}
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "Setting temperature 0 (do_sample false) in the checkpoint's generation_config.json, with the weights byte-identical to exp-02, raises dev-150 accuracy over exp-02's 0.6133."
+  mechanism: "vLLM's generation_config='auto' takes request defaults from that file, so the same weights are decoded greedily instead of at temperature 1.0, following the argmax chain the SFT actually optimised."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "+3 to +10 points"}
+  falsified_if: "dev-150 accuracy is at or below 0.6133, e.g. because greedy decoding falls into repetition loops - visible as a rise in max_tokens stop reasons"
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-03_greedy/generation_config.json
+      source: "derived:exp-02"
+      n_examples: 1
+      built_by: null
+      build_command: [python, -c, "do_sample=False, temperature=0.0, drop top_k/top_p"]
+      selection: "no training data: this card changes one config file. Every weight file in ckpts/exp-03_greedy is a symlink to the exp-02 checkpoint, so the comparison isolates the decoding default."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vLLM 0.11.0, generation_config='auto'"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, scripts/eval_and_diag.py, --model-path, /home/ben/task/ckpts/exp-03_greedy, --tag, exp-03_greedy_dev150]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/eval_and_diag.py
+    env: {}
+    log: /home/ben/task/logs/exp-03_eval.log
+  output_dir: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.1}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split, --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.6133
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "share of completions stopping on <end_of_turn> (a drop would mean greedy repetition loops)"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.05
+  output_checkpoint: /home/ben/task/ckpts/exp-03_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03_greedy, step: 877}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to ckpts/exp-02/final"}
+  measurements:
+    - {metric: accuracy, value: 0.7533, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.14}
+  diagnostic_result:
+    value: 0.987
+    path: /home/ben/task/analysis/exp-03_greedy_dev150_diag.json
+    notes: "148/150 still stop on <end_of_turn> (exp-02: 149/150), so greedy decoding did not cause repetition loops; median completion 431 chars vs 381."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Same weights, one config file changed: dev-150 0.6133 -> 0.7533 (+14.0 points, ~3.5 stderr). Fourteen points of the benchmark were being spent on decoding noise the harness never intended to sample."
+  decision: adopt
+  next_step: "Carry temperature 0 into every later checkpoint's generation_config.json. exp-04: attack the residual arithmetic/reasoning failures with rejection-sampling fine-tuning on the model's own correct solutions."

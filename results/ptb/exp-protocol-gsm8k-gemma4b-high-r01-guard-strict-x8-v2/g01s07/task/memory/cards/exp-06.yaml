@@ -1,0 +1,131 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-03T17:10:00Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 7.1
+  remaining_h: 2.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.764, protocol_n: 500}
+  trigger: "exp-05's paired analysis: exp-02 and exp-04 are statistically indistinguishable (0.764 vs 0.746, McNemar p=0.272) but they disagree on 53 of 500 items - 31 that only exp-02 gets and 22 that only exp-04 gets. Two checkpoints that score the same while failing on different items are the textbook case where averaging their weights beats both."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-05_paired.json, locator: "only_exp02_correct=31, only_exp04_correct=22, both=351, neither=96"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.diagnostic_result, conclusion.next_step"}
+  alternatives_rejected:
+    - {option: "Stop here and ship exp-02", reason: "exp-02 is already installed as final_model and stays installed unless this card measures higher, so the downside of running it is only GPU time, of which ~2.9h remain against a ~0.6h cost"}
+    - {option: "A third SFT stage on data/omi2_gsm8k_round3.jsonl (61685 rows, built and contamination-checked)", reason: "~0.9h of training plus ~0.3h of eval leaves no margin, and exp-04 already showed this data axis is saturated - a smaller, more redundant slice of the same 80815 problems is the weakest remaining option"}
+    - {option: "Rejection-sampling fine-tuning from exp-02", reason: "sampling pass plus training plus eval is ~1.5h, more than the remaining margin allows once packaging and a final load check are reserved"}
+    - {option: "Sweep the mixing weight alpha over several values", reason: "each alpha needs its own 16-minute n=500 eval; with one shot, 0.5 is the standard choice and the two endpoints are already measured (0.764 and 0.746), so alpha=0.5 is the only interior point worth spending on"}
+    - {option: "Evaluate the soup at n=150 to save 10 minutes", reason: "protocol rule 2 - the comparator (exp-02 at 0.764) was measured at n=500, so the candidate must be too, and n=150 could not resolve the effect anyway"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, soup.py, --a, /home/ben/task/ckpts/exp-02/final, --b, /home/ben/task/ckpts/exp-04/final, --alpha, "0.5", --out, /home/ben/task/ckpts/soup-0205], outcome: "reports how many of the 3.9B-parameter tensors actually differ between the two checkpoints, which is the sanity check that the soup is not just a copy of one of them"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "The best checkpoint available, exp-02, is wrong on 118 of 500 dev items. 96 of those are also wrong under exp-04, but 22 of them exp-04 gets right - so a fifth of exp-02's remaining errors are already solved by a model sitting on disk, and neither checkpoint alone captures both sets. No further training budget exists to close the gap by data."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-05_paired.json, locator: "only_exp04_correct=22 of exp-02's 118 errors", observation: "18.6% of exp-02's errors are items exp-04 answers correctly"}
+    - {path: /home/ben/task/eval/exp-02_dev500.json, locator: "accuracy=0.764, stderr=0.0190"}
+    - {path: /home/ben/task/eval/exp-04_dev500.json, locator: "accuracy=0.746, stderr=0.0195"}
+  affected_share: 0.186
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "A uniform 50/50 weight average of ckpts/exp-02/final and ckpts/exp-04/final scores higher than exp-02's 0.764 on the n=500 protocol."
+  mechanism: "exp-04 is exp-02 continued on 120000 further rows with a fresh cosine decay, so the two sit in the same loss basin and can be averaged elementwise without a permutation alignment step. Averaging inside one basin behaves like an approximation to averaging the two models' predictions, which is worth something exactly when the two make errors on different items - here 53 discordant of 500. The averaged weights should keep the behaviour both agree on (351 items) and recover part of the 53 they split on."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+0 to +3 points; anything above 0.784 at n=500 would be a clear win, and a null result is the expected outcome if the two checkpoints are effectively the same function"
+  falsified_if: "n=500 accuracy is at or below exp-02's 0.764, or clean termination (stop_reason='stop') falls below 0.95, which would mean the average landed off the basin and broke the format behaviour."
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/README_eval_only.md
+      source: "openai/gsm8k (test split, first 500) - read by the harness at evaluation; this card trains nothing, it averages two existing checkpoints"
+      n_examples: 500
+      built_by: null
+      build_command: [python, soup.py, --a, ckpts/exp-02/final, --b, ckpts/exp-04/final, --alpha, "0.5", --out, ckpts/soup-0205]
+      selection: "merge-only card: no rows are read. The two inputs are ckpts/exp-02/final (trained on data/omi2_gsm8k_all.jsonl) and ckpts/exp-04/final (that checkpoint continued on 120000 rows of data/omi2_gsm8k_round2.jsonl); both source files passed the contamination check."
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: merge
+    framework: "safetensors + transformers 4.57.3, elementwise mean in float32, cast back to bf16"
+    peft: "none"
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged - the merged weights inherit exp-02's tokenizer, processor and the greedy generation_config.json (do_sample false, temperature 0.0, eos includes 106)"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, soup.py, --a, /home/ben/task/ckpts/exp-02/final, --b, /home/ben/task/ckpts/exp-04/final, --alpha, "0.5", --out, /home/ben/task/ckpts/soup-0205]
+    cwd: /home/ben/task
+    script: /home/ben/task/soup.py
+    env: {}
+    log: /home/ben/task/logs/soup.log
+  output_dir: /home/ben/task/ckpts/soup-0205
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.6}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "500", --max-connections, "16"]
+    dev_set: "official --limit 500 (first 500 items of inspect_evals/gsm8k test split, unshuffled)"
+    n: 500
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.764
+    path: /home/ben/task/eval/exp-02_dev500.json
+  diagnostic:
+    what: "paired breakdown of the soup against exp-02 over the same 500 items (how many of exp-02's 118 errors the soup fixes, and how many of exp-02's 382 correct answers it breaks)"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 0.45
+  output_checkpoint: /home/ben/task/ckpts/soup-0205
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/soup-0205, step: 0}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 4739}
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 3750}
+  training_summary:
+    final_loss: null
+    steps: null
+    notes: "merge only. 883 tensors averaged; exactly 276 of them differ between the two checkpoints - the text model - while the 607 vision_tower and projector tensors are bit-identical, which is the expected signature of a run that froze the vision stack. Shards were rewritten in exp-02's own key layout rather than round-tripped through load_state_dict, after the first attempt failed on the language_model.* vs model.language_model.* key remapping."
+  measurements:
+    - {metric: accuracy, value: 0.776, n: 500, path: /home/ben/task/eval/soup_dev500.json, delta_vs_comparator: 0.012}
+    - {metric: accuracy, value: 0.77, n: 500, path: /home/ben/task/eval/final_model_dev500.json, delta_vs_comparator: 0.006}
+  diagnostic_result:
+    value: 24
+    path: /home/ben/task/analysis/exp-06_paired.json
+    notes: "Paired against exp-02 over the same 500 items: the soup fixes 24 of exp-02's 118 errors and breaks 18 of its 382 correct answers, net +6 items. Exact McNemar two-sided p=0.441 - not significant. Termination improved slightly, 98.7% -> 99.2% clean stops, so the average stayed inside the basin. IMPORTANT side finding: re-running the identical weights from the final_model/ path scored 0.770 rather than 0.776 on the same 500 items. Decoding is greedy, so that 3-item spread is vLLM engine jitter (continuous batching changes kernel shapes and hence numerics), not sampling. Every n=500 comparison in this session therefore carries roughly +/-0.6 points of engine noise on top of its 1.9-point standard error."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "The 50/50 soup scores 0.776 (and 0.770 on a re-run) against exp-02's 0.764 and exp-04's 0.746, i.e. above both parents, which is the signature the mechanism predicts. The margin is small and not significant on its own (McNemar p=0.441), but it is the best point estimate available and it beats both endpoints on the same items rather than on a different protocol."
+  decision: adopt
+  next_step: "ckpts/soup-0205 is installed as final_model and verified: all required files present, architectures=['Gemma3ForConditionalGeneration'] so evaluate.py routes it to templates/gemma3.jinja, greedy generation_config, loads standalone on CPU with transformers (4.300B params), and scores 0.770 at n=500 when run from the final_model/ path itself. A full-test-set run (n=1319) is in flight for a headline number. If more budget existed, the two untried lines are rejection-sampling fine-tuning from the soup (on-policy, targets the 96 items both parents fail) and an alpha sweep of the soup weight - with the caveat that engine jitter alone is +/-0.6 points at n=500, so either would need n>=1319 to be measurable."

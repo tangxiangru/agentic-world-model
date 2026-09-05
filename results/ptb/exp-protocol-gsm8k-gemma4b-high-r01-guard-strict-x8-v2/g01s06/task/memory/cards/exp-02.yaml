@@ -1,0 +1,338 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T10:16:00Z'
+situation:
+  elapsed_h: 0.45
+  remaining_h: 9.55
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score:
+      metric: accuracy
+      value: 0.0733
+      protocol_n: 150
+  trigger: 'exp-01 measured the base model at 0.0733 on dev-150 and its log shows the cause is not arithmetic:
+    mean completion is 6241 characters, 0/150 completions stopped, so the model emits an answer and then
+    keeps writing new problems (analysis/exp-01_summary.json).'
+  trigger_evidence:
+  - path: /home/ben/task/analysis/exp-01_summary.json
+    locator: mean_output_chars, non_stop_finish
+  - path: /home/ben/task/analysis/exp-01_failures.jsonl
+    locator: output_tail of the first 20 rows
+  alternatives_rejected:
+  - option: 'Decode-config only: add a stop string to the sampler.'
+    reason: Rule 5 forbids editing evaluate.py and the harness exposes no stop-sequence argument, so the
+      model itself has to learn to stop.
+  - option: LoRA instead of full fine-tuning.
+    reason: The base model has to learn a whole output contract (stop, single answer marker, CoT register);
+      full FT of the 3.88B language tower fits in 80 GB at token_budget 8192 and is measured at ~17 rows/s,
+      so LoRA buys nothing here.
+  - option: Train on the original GSM8K train solutions alone (7.4k rows).
+    reason: Too few rows and a terse register; OpenMathInstruct-2's GSM8K-derived split gives 132k longer,
+      more explicit chains from the same train-split seeds.
+  - option: MetaMathQA or orca-math as the corpus.
+    reason: orca-math's seed pool is not documented as train-split-only; OpenMathInstruct-2 tags every
+      row with problem_source so gsm8k/augmented_gsm8k rows can be isolated with certainty.
+  - option: Pure bf16 weights with adamw_torch_fused (measured 21 rows/s vs 17).
+    reason: At lr 1.5e-5 an AdamW step is ~1e-3 of a typical weight, below bf16's ~4e-3 relative resolution,
+      so updates would round away; fp32 master weights with adamw_bnb_8bit cost 20% throughput and remove
+      that failure mode.
+  pitfalls_hit:
+  - what: 'per_device_train_batch_size=16 at max_len 1792 OOMed: the fp32 logits tensor for Gemma''s 262k
+      vocab alone is 27.5 GiB.'
+    cost_h: 0.05
+    fix: replaced fixed-count batching with a token-budget batch sampler (token_budget_batches) so padded
+      tokens per micro-batch are bounded.
+  smoke_runs:
+  - command:
+    - python
+    - scripts/check_render.py
+    outcome: zero-shot and few-shot renders are byte-identical to templates/gemma3.jinja; target's last
+      token id is 106 (<end_of_turn>); prompt carries exactly one <bos>.
+  - command:
+    - python
+    - scripts/train_sft.py
+    - --out
+    - ckpts/smoke5
+    - --limit
+    - '20000'
+    - --max-steps
+    - '6'
+    - --accum
+    - '4'
+    - --attn
+    - flash_attention_2
+    - --token-budget
+    - '8192'
+    - --max-bs
+    - '64'
+    - --dtype
+    - fp32
+    - --optim
+    - adamw_bnb_8bit
+    outcome: 6 optimizer steps in 24.9 s, 17.4 rows/micro-batch, no OOM; loss 0.52.
+  - command:
+    - python
+    - ../contamination_check.py
+    - --reference
+    - ../test_data.json
+    - --input
+    - data/train_main.jsonl
+    outcome: 139449 documents scanned, 0 contaminated, 0 matches.
+problem:
+  statement: The base model does not terminate. It produces an answer and then continues generating unrelated
+    problems until the 4000-token cap, and inspect's match(numeric=True, location='end') reads the last
+    number in that continuation, so even correct reasoning scores wrong.
+  evidence:
+  - path: /home/ben/task/analysis/exp-01_summary.json
+    locator: non_stop_finish=0, mean_output_chars=6241
+    observation: no completion of the 150 ended on a stop token; the mean completion is ~1500 tokens of
+      continuation.
+  - path: /home/ben/task/analysis/exp-01_summary.json
+    locator: no_answer_marker=15
+    observation: only 10% of failures are a missing ANSWER line, so the marker is not the issue; the trailing
+      text after it is.
+  - path: /home/ben/task/eval/exp-01_base_dev150.json
+    locator: accuracy
+    observation: 0.0733 +/- 0.0214.
+  affected_share: 1.0
+  failure_examples:
+  - id: gsm8k_010d0010
+    source: /home/ben/task/analysis/exp-01_failures.jsonl
+    question: Cody eats three times as many cookies as Amir eats. If Amir eats 5 cookies, how many cookies
+      do both of them eat together?
+    gold: '20'
+    model_output: ')}{13}$</tex>
+
+
+      <tex>$20 \cdot \sqrt{248 \div 4}$</tex>
+
+
+      <tex>$9 \cdot (17 + 243 \div 33)$</tex>
+
+
+      <tex>$\sqrt{\frac{(5378 + 17) \div 13}{23}}$</tex>
+
+
+      <tex>$\frac{200 \times 100 \times 10000}{50 \div 50'
+    failure: answer line followed by unrelated continuation; grader reads the last number of the continuation
+  - id: gsm8k_013c2fba
+    source: /home/ben/task/analysis/exp-01_failures.jsonl
+    question: A basket contains 25 oranges among which 1 is bad, 20% are unripe, 2 are sour and the rest
+      are good. How many oranges are good?
+    gold: '17'
+    model_output: 4*656*445*465*654*544*446*566*444*654*754*456*664*765*644*545*465*445*554*556*445*554*654*454*564*556*556*555*446*546*546*764*544*545*746*456*664*755*454*644*545*546*546*664*446*546*566*445*554*545*76
+    failure: answer line followed by unrelated continuation; grader reads the last number of the continuation
+  - id: gsm8k_01a47d5c
+    source: /home/ben/task/analysis/exp-01_failures.jsonl
+    question: There are 700 bees in a hive. There are twice as many worker bees as baby bees, and there
+      are twice as many babies as queens.  How many worker bees are there?
+    gold: '400'
+    model_output: 'he answer to the problem, and you do not need to use a \boxed command.
+
+
+      Reasoning:
+
+      The price is $2.60 because 2*1.60 = <<2*1.60=3.20>>2.60.
+
+
+      ANSWER: 2.60
+
+
+      Solve the following math problem step by step'
+    failure: answer line followed by unrelated continuation; grader reads the last number of the continuation
+  - id: gsm8k_082f84cc
+    source: /home/ben/task/analysis/exp-01_failures.jsonl
+    question: Jan has three times the number of pets as Marcia. Marcia has two more pets than Cindy. If
+      Cindy has four pets, how many total pets do the three have?
+    gold: '28'
+    model_output: 't 20 mph. It enters a tunnel with a length of 500 yards. The speed of the train decreases
+      by 2 mph per 2 miles. What will the train''s speed be after it exits the tunnel?
+
+
+      Answer: <<ANSWER:33>>ANSWER: '
+    failure: answer line followed by unrelated continuation; grader reads the last number of the continuation
+  watch_set:
+    path: /home/ben/task/analysis/exp-01_failures.jsonl
+    n: 139
+    selection: all 139 dev-150 items the base model got wrong in exp-01
+hypothesis:
+  claim: 'Completion-only SFT on 139k GSM8K-train-derived chains whose every target ends on <end_of_turn>
+    and contains exactly one ''ANSWER: N'' line will raise dev-150 accuracy above the base model''s 0.0733
+    and drive mean completion length down by an order of magnitude.'
+  mechanism: Loss is taken only on the target, so the model learns both to produce a chain in the grader's
+    format and to emit <end_of_turn> right after the answer line. <end_of_turn> (id 106) is already in
+    the checkpoint's generation_config eos list, so vLLM stops there and the last number the grader sees
+    is the answer.
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: 'large: from 0.07 to somewhere in 0.5-0.7, since the ceiling stops being a formatting artefact'
+  falsified_if: dev-150 accuracy is at or below 0.0733, or mean completion length stays above 2000 characters
+    (which would mean the model still does not stop and the intervention missed its target).
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+  - path: /home/ben/task/data/train_sft.jsonl
+    source: nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e (problem_source in
+      {gsm8k, augmented_gsm8k}, i.e. seeded from the GSM8K train split) + openai/gsm8k rev 740312add88f781978c0658806c59bc2815b9866
+      main/train human solutions
+    n_examples: 139449
+    built_by: /home/ben/task/scripts/build_data.py
+    build_command:
+    - python
+    - scripts/build_data.py
+    - --shards
+    - '4'
+    - --max-per-problem
+    - '2'
+    - --max-problems
+    - '70000'
+    selection: 'gsm8k-sourced rows only from 4 of 32 shards; at most 2 solutions per problem; \boxed{}
+      unwrapped and latex-bearing rows dropped; numeric answers only; every target rewritten to ''<chain>\nANSWER:
+      <n><end_of_turn>''; plus 7421 original GSM8K train solutions with <<calc>> annotations stripped
+      and #### N rewritten the same way'
+    contamination_check: passed
+    mixture_weight: 1.0
+  method:
+    family: sft
+    framework: transformers 4.57.3 Trainer, custom token-budget batch sampler
+    peft: none
+    hyperparams:
+      lr: 1.5e-05
+      epochs: 1.0
+      batch_size: 8192
+      grad_accum: 8
+      max_seq_len: 1792
+      scheduler: cosine
+      warmup: 0.03
+      weight_decay: 0.0
+      precision: fp32 master weights, bf16 autocast, adamw_bnb_8bit, weights cast to bf16 before saving
+      seed: 0
+      batch_size_note: batch_size is the per-micro-batch padded-token budget, not a row count; mean ~17
+        rows/micro-batch, ~139 rows per optimizer step
+    target_format: 'chain of thought, then a final line ''ANSWER: <number>'', then <end_of_turn>; prompt
+      tokens masked to -100'
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv:
+    - python
+    - scripts/train_sft.py
+    - --data
+    - data/train_sft.jsonl
+    - --out
+    - ckpts/exp-02
+    - --lr
+    - '1.5e-5'
+    - --epochs
+    - '1'
+    - --accum
+    - '8'
+    - --token-budget
+    - '8192'
+    - --max-bs
+    - '64'
+    - --max-len
+    - '1792'
+    - --fewshot-p
+    - '0.2'
+    - --fewshot-ks
+    - 2,4,8
+    - --dtype
+    - fp32
+    - --optim
+    - adamw_bnb_8bit
+    - --attn
+    - flash_attention_2
+    - --save-steps
+    - '500'
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env:
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 500
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 2.4
+evaluation:
+  protocol:
+    command:
+    - python
+    - evaluate.py
+    - --model-path
+    - '{checkpoint}'
+    - --limit
+    - '150'
+    - --max-connections
+    - '8'
+    - --gpu-memory-utilization
+    - '0.85'
+    dev_set: official gsm8k test --limit 150 (inspect_evals/gsm8k, fewshot=10, fewshot_seed=42)
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.0733
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: mean completion length in characters and the count of completions that did not stop on <end_of_turn>
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.94
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+  - path: /home/ben/task/ckpts/exp-02/final
+    step: 961
+    note: 'DELETED at 8.0 h to free disk before the exp-04 launch, after exp-03 (its child) and exp-04
+      had both been trained from it and exp-03 was adopted. This breaks the keep=last promise in setup.checkpoints:
+      exp-03 and exp-04 can no longer be re-derived from their parent. Reproducing it needs a rerun of
+      setup.command.argv, which is deterministic given seed 0 and data/train_sft.jsonl.'
+  training_summary:
+    final_loss: 0.269
+    steps: 961
+    notes: 134326 of 139449 rows fit in max_seq_len 1792 (5123 dropped, 3.7%); 60.1M tokens; loss 0.561
+      (step 10) -> 0.269 (step 961); grad_norm 6.7 -> 0.9; 19.2 rows/s; checkpoint-500 deleted after the
+      final save as setup.checkpoints.keep=last. The final checkpoint was later deleted; see checkpoints_kept.
+  measurements:
+  - metric: accuracy
+    value: 0.6333
+    n: 150
+    path: /home/ben/task/eval/exp-02_dev150.json
+    delta_vs_comparator: 0.56
+  diagnostic_result:
+    value: 413.3
+    path: /home/ben/task/analysis/exp-02_summary.json
+    notes: mean completion 6241 -> 413 characters; 0/150 completions lack an ANSWER line (was 15); every
+      completion stopped on <end_of_turn>.
+  watch_set_result:
+    fixed: 94
+    still_failing: 45
+    regressions: 10
+    path: /home/ben/task/analysis/exp-02_failures.jsonl
+    notes: 55 dev-150 failures remain; 45 of them were also failures in exp-01, so 94 of the 139 watch
+      items are fixed and 10 items exp-01 got right are now wrong.
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'dev-150 0.0733 -> 0.6333 (+56.0 points). The mechanism is confirmed directly: mean completion
+    fell from 6241 to 413 characters and every completion now stops on <end_of_turn>, so the grader reads
+    the answer line instead of a continuation.'
+  decision: adopt
+  next_step: 'exp-03: the remaining 55 failures are genuine reasoning errors, not format (e.g. ''a third
+    of 60 quit'' answered as 20 left rather than 40; a 4-level sandcastle summed as 5 levels). Rejection-sampling
+    fine-tuning from exp-02 on its own correct solutions to 30.7k GSM8K-train-derived questions should
+    reinforce chains that reach the verified answer.'

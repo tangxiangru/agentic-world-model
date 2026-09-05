@@ -1,0 +1,139 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-04T00:04:54Z'
+situation:
+  elapsed_h: 5.1
+  remaining_h: 4.9
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.7533, protocol_n: 150}
+  trigger: "The two gains found so far are independent of each other and have never been combined: exp-04's three-attempt vote (+1.6 pts of rescues on the held-out 800, built on exp-02) and exp-05's second data round (+2.6 pts on the same 800, built on exp-02 without the vote). exp-05 is the better solver and currently emits one attempt."
+  trigger_evidence:
+    - path: /home/ben/task/memory/cards/exp-04.yaml
+      locator: "result.diagnostic_result: 23% of completions disagree; 24 rescues vs 11 breaks"
+    - path: /home/ben/task/memory/cards/exp-05.yaml
+      locator: "result.measurements: 0.785 on held-out 800 vs exp-02's 0.759"
+  alternatives_rejected:
+    - option: "Reuse data/vote_exp04.jsonl (triples sampled from exp-02)"
+      reason: "saves 25 min but the attempts would carry exp-02's error modes; exp-05 fixed 64 of those items, so a third of the mixed triples would be teaching the model to disagree with itself in ways it no longer does. Resampling from exp-05 is on-policy."
+    - option: "Stop here and ship exp-05"
+      reason: "the vote is cheap to re-apply (25 min sampling + 32 min training) and 4.9 h remain; exp-05 stays on disk as the fallback if this regresses."
+    - option: "Sample 5 attempts instead of 3"
+      reason: "unchanged from exp-04: correlated in-context attempts make the marginal attempt cheap, and longer completions bring back the repetition-loop failure."
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "exp-05 answers each problem with a single chain of thought and gets 172 of 800 held-out problems wrong; exp-04 demonstrated that on ~23% of problems the model's attempts disagree with each other and that counting them recovers a net 1.6 pts. exp-05 has never been given that ability."
+  evidence:
+    - path: /home/ben/task/analysis/exp05_dev800.json
+      locator: "summary.accuracy 0.785, n=800"
+      observation: "172/800 still wrong with one attempt"
+    - path: /home/ben/task/analysis/exp04_dev800.json
+      locator: "records, attempt-agreement analysis"
+      observation: "182/792 completions had disagreeing attempts; the vote fixed 24 and broke 11"
+  affected_share: 0.215
+  failure_examples:
+    - id: dev800-flowers
+      source: /home/ben/task/analysis/exp05_dev800.json
+      question: "(Jaden picks 15% of 250 flowers, plants 3 seeds per flower picked)"
+      gold: "324"
+      model_output: "single chain rounds 37.5 down and commits"
+      failure: "no second opinion on a rounding decision"
+    - id: smoke-mixed-1
+      source: /tmp/vote_smoke.jsonl
+      question: "(Emily deadlift belt vs straps)"
+      gold: "47.5"
+      model_output: "one attempt applies 15% to the wrong quantity, two get it right"
+      failure: "exactly the class the vote rescues"
+    - id: dev800-loop
+      source: /home/ben/task/analysis/exp05_dev800.json
+      question: "(1.0% of the 800)"
+      gold: "n/a"
+      model_output: "runs to the token cap"
+      failure: "single derailed chain, no recovery; exp-04's format cut this to 0.5%"
+  watch_set: null
+hypothesis:
+  claim: "Training exp-05 on three-attempt-plus-majority-vote targets resampled from exp-05 itself raises held-out-800 accuracy above exp-05's 0.785."
+  mechanism: "Same as exp-04 -- the vote resolves the ~23% of problems where the model's own attempts disagree -- but applied to a better solver and with triples drawn from that solver, so the incorrect attempt in each mixed triple is an error exp-05 actually makes."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "+1 to +2.5 pts on the held-out 800 (exp-04's measured net rescue rate, no more)"
+  falsified_if: "held-out-800 accuracy at or below exp-05's 0.785, or fewer than 15% of dev completions have disagreeing attempts (collapse of the vote into a rubber stamp)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/vote_exp06.jsonl
+      source: "synthetic:self (exp-05/final samples over OpenMathInstruct-2 GSM8K-derived problems from round 1)"
+      n_examples: 14654
+      built_by: /home/ben/task/vote_data.py
+      build_command: [python, vote_data.py, --model, ckpts/exp-05/final, --n-problems, '18000', --k, '4', --seed, '3', --out, data/vote_exp06.jsonl, --stats-out, analysis/vote_exp06_stats.json]
+      selection: "identical to exp-04's: k=4 at T=1.0/top_p=0.95, drop truncated samples, require 2 distinct correct, triple = 2 correct + 1 incorrect when an incorrect exists else 3 distinct correct, order shuffled, exactly one 'ANSWER: ' marker at the end"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "transformers 4.57.3 Trainer + liger-kernel 0.8.2 fused-linear-CE"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2.0, batch_size: 32, grad_accum: 3, max_seq_len: 3072, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "'Attempt i:' <solution> 'So the answer is n.' x3, then 'The three attempts give a, b, c. The majority answer is m.', then 'ANSWER: m' and <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-05/final, --data, data/vote_exp06.jsonl, --out, /home/ben/task/ckpts/exp-06, --epochs, '2', --lr, '1e-5', --bs, '32', --accum, '3', --max-seq-len, '3072', --liger, --attn, flash_attention_2, --optim, adamw_bnb_8bit, --save-steps, '150']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 150
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7533
+    path: /home/ben/task/eval/exp05_dev150.json
+  diagnostic:
+    what: "held-out 800 greedy accuracy plus the share of completions whose three attempts disagree, and the rescue/break counts among those"
+    n: 800
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 1.15
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 306}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-300, step: 300}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-306, step: 306}
+  training_summary: {final_loss: 0.1805, steps: 306, notes: "14644 rows of 14654 kept, 12.4M tokens, 2 epochs, 32 min. First launch died at step 150 in Trainer._save_checkpoint: the greedy generation_config I had written into the exp-05 parent (do_sample false AND temperature 0.0) fails GenerationConfig.validate(strict=True); dropped the temperature key from the parent and relaunched identically."}
+  measurements:
+    - {metric: accuracy, value: 0.7867, n: 150, path: /home/ben/task/eval/exp06_dev150.json, delta_vs_comparator: 0.0334}
+    - {metric: accuracy, value: 0.77, n: 800, path: /home/ben/task/analysis/exp06_dev800.json, delta_vs_comparator: -0.015}
+  diagnostic_result:
+    value: 0.236
+    path: /home/ben/task/analysis/exp06_dev800.json
+    notes: "798/800 completions emit three attempts, 188 (23.6%) disagree -- the same rate as exp-04, so the vote did not collapse. Among disagreements: 25 rescued, 16 broken, net +9. But against exp-05 on the same 800 the paired count is 58 fixed / 70 broken, i.e. the vote format costs about as much elsewhere as it gains on disagreements. Truncation 0.1%."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: supported
+  summary: "The vote mechanism still works on the better solver (23.6% disagreement, 25 rescues vs 16 breaks) but the format no longer pays for itself: held-out-800 goes 0.785 -> 0.770 (paired 58 fixed / 70 broken). On dev-150 it reads the other way, 0.7533 -> 0.7867, the best official number of the batch. The two dev sets disagree, so neither exp-05 nor exp-06 can be declared the winner from what exists now."
+  decision: iterate
+  next_step: "exp-07: break the tie on the official set at n=500, where run-to-run noise is ~2 pts instead of ~6, for exp-04, exp-05 and exp-06; the winner becomes final_model."

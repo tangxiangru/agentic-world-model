@@ -1,0 +1,105 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-05T06:05:46Z'
+situation:
+  elapsed_h: 7.5
+  remaining_h: 2.5
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/merged
+    score: {metric: accuracy, value: 0.5267, protocol_n: 150}
+  trigger: "exp-05 RFT never ran (record_vllm card-hash incompatibility + vLLM engine hang cost ~4h). Retry STaR with plain vLLM and continue-training, time-boxed, without touching final_model (still exp-04)."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "result.failure"}
+  alternatives_rejected:
+    - {option: "give up and finalize exp-04", reason: "still safe as fallback (final_model untouched); one tight RFT attempt has positive EV with ~2.5h left"}
+    - {option: "retrain from base on combined (2-3 epochs)", reason: "too slow for the remaining budget; continue-training exp-04 for 1 epoch is fast and builds on the strong incumbent"}
+  pitfalls_hit:
+    - {what: "record_vllm rejects not-yet-existing declared data + vLLM subprocess hung ~4h (pitfalls run_dies/vllm_offline)", cost_h: 4.0, fix: "plain vLLM LLM.generate with CPU-verified single-bos token_ids and stop_token_ids=[106]; per-stage `timeout` wrappers; explicit del llm + empty_cache"}
+  smoke_runs:
+    - {command: [python, -c, "cpu apply_chat_template tokenize=True bos assert"], outcome: "ids[0]==bos, ids[1]!=bos (no double bos), verified in sampler assert"}
+problem:
+  statement: "exp-04 makes genuine arithmetic/logic errors on ~47% of dev items. Need more diverse verified correct reasoning; the pinned sampling helper was incompatible with runtime data, so use plain vLLM."
+  evidence:
+    - {path: /home/ben/task/eval/exp-04_dev150.json, locator: "n=150", observation: "71 wrong, all reasoning errors"}
+  affected_share: 0.47
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Continue-training exp-04 for 1 epoch on gold + rejection-sampled self-generated correct solutions raises n=150 accuracy above exp-04's 0.527."
+  mechanism: "Verified self-samples add diverse in-distribution correct reasoning chains; a gentle 1-epoch continuation (lr 1e-4) on gold+RFT reinforces correct multi-step reasoning without forgetting format/stopping."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-04
+    magnitude: "+2 to +6 pts"
+  falsified_if: "n=150 accuracy <= 0.527."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/merged
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/combined_rft.jsonl
+      source: derived:exp-04
+      n_examples: 7473
+      built_by: /home/ben/task/run_exp06.sh
+      build_command: [bash, run_exp06.sh]
+      selection: "7473 gold few-shot rows + exp-04 self-samples (n=4/q temp0.8 2-shot) filtered to correct final answer, one ANSWER:, deduped, <=2/q; contamination-checked before training (wrapper aborts on any test match)"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: rft
+    framework: "vLLM 0.11.0 (plain LLM.generate) + transformers Trainer + peft LoRA; continue from exp-04 merged"
+    peft: "LoRA r=64 alpha=128 dropout=0.05 targets=language_model q,k,v,o,gate,up,down"
+    hyperparams: {lr: 1.0e-4, epochs: 1, batch_size: 4, grad_accum: 8, max_seq_len: 1536, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "reasoning then 'ANSWER: <int>' then <end_of_turn>; completion-only loss; left-truncation preserves target tail"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, run_exp06.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/run_exp06.sh
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.5
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-06/merged, --limit, "150", --json-output-file, /home/ben/task/eval/exp-06_dev150.json]
+    dev_set: "official --limit 150"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.5267
+    path: /home/ben/task/eval/exp-04_dev150.json
+  diagnostic:
+    what: "rejection-sampling yield fraction (train questions with >=1 correct draw)"
+    n: 7473
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.2
+  output_checkpoint: /home/ben/task/ckpts/exp-06/merged
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/merged, step: 617}
+  training_summary: {final_loss: 0.1476, steps: 617, notes: "continue from exp-04, 1 epoch on combined (19765 rows = 7473 gold + 12292 RFT); train_runtime 3629s; no OOM/hang"}
+  measurements:
+    - {metric: accuracy, value: 0.5667, n: 150, path: /home/ben/task/eval/exp-06_dev150.json, delta_vs_comparator: 0.04}
+  diagnostic_result: {value: 0.885, path: /home/ben/task/analysis/contam_rft.txt, notes: "RFT yield 6611/7473 (88.5%) solved; 20938 correct draws; kept 12292 rows; contamination check 0 matches"}
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: null}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "STaR RFT (continue exp-04 1 epoch on gold+12292 verified self-samples) lifts n=150 accuracy 0.527 -> 0.567 (+4.0, ~1 stderr at n=150). Best model of the batch. Promoted to final_model (byte-identical to the eval'd checkpoint; Gemma3ForConditionalGeneration, greedy generation_config; vLLM-loadable as confirmed by the scoring eval)."
+  decision: adopt
+  next_step: "final_model = exp-06 (0.567). If more time: larger n=500 confirmation eval, or a 2nd STaR round. Batch ended near the 10h budget."

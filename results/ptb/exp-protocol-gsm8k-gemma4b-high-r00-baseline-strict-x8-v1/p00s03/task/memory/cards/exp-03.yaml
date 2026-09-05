@@ -1,0 +1,109 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T20:43:38Z'
+situation:
+  elapsed_h: 1.05
+  remaining_h: 8.9
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.62, protocol_n: 150}
+  trigger: "evaluate.py never sets temperature, so vLLM falls back to the checkpoint's own generation_config.json; exp-02/final still ships gemma's pretrain defaults (top_k 64, top_p 0.95, no temperature => T=1.0), i.e. every graded answer is one random sample rather than the model's best guess."
+  trigger_evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "lines 74-86: inspect_eval(...) passes max_tokens and max_connections but no temperature"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "get_diff_sampling_param, lines 1344-1392", observation: "generation_config='auto' by default; temperature/top_p/top_k from the model dir become the server defaults for requests that omit them"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/protocol.py, locator: "to_sampling_params, lines 680-705", observation: "request temperature is None -> default_sampling_params value is used"}
+  alternatives_rejected:
+    - {option: "Leave the decoding alone and spend the time on more data", reason: "this is a 3-minute eval on an existing checkpoint; the data run is queued next either way"}
+    - {option: "Lower the temperature to ~0.3 instead of 0", reason: "greedy is the extreme point and tells me the sign and size of the effect; if greedy wins, a middle setting can only be tested against it, not instead of it"}
+    - {option: "Train the model to emit several attempts and vote internally", reason: "would exploit the T=1.0 default rather than remove it, but costs a data-generation pipeline; only worth it if greedy turns out NOT to help"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, make_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02/final_greedy, --temperature, '0.0'], outcome: "variant dir written; generation_config.json now has temperature 0.0, do_sample false; weights symlinked so it costs no disk"}
+problem:
+  statement: "The graded answer for each item is a single T=1.0 sample from the SFT model. A 4B model's sampled chain of thought derails more often than its greedy one, so accuracy is being thrown away at decode time rather than at training time."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_final_dev150_diag.json, locator: "graded_accuracy 0.62, first_answer_line_accuracy 0.6133", observation: "the model stops correctly everywhere (non_stop_share 0.0), so the remaining 38% are reasoning errors, some of them sampling noise"}
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "first_answer_line_accuracy 0.10", observation: "the base model at T=1.0 scored far below gemma-3-4b-pt's published few-shot GSM8K, consistent with sampling being costly on this task"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Shipping generation_config.json with temperature 0.0 (greedy) in the checkpoint directory raises dev-150 accuracy relative to the same weights with gemma's pretrain sampling defaults."
+  mechanism: "vLLM's generation_config='auto' makes the model dir's generation_config.json the server-side default for any sampling field the request omits, and evaluate.py omits temperature; greedy decoding removes the per-token chance of derailing a chain of thought that the model would otherwise get right."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +8 points"
+  falsified_if: "dev-150 accuracy is not above exp-02's 0.62, or the vLLM log does not show the 'Default sampling parameters have been overridden by the model's Hugging Face generation config' warning (which would mean the override never took effect)"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "unchanged from exp-02; no training happens in this card"
+      n_examples: 25715
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v1.jsonl]
+      selection: "not re-used: this card only rewrites generation_config.json of exp-02's weights"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "vllm 0.11.0 (generation_config='auto')"
+    peft: none
+    hyperparams: {temperature: 0.0, top_p: 0.95, top_k: 64}
+    target_format: "weights identical to exp-02/final (symlinked); only generation_config.json differs"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, eval_model.py, --model-path, /home/ben/task/ckpts/exp-02/final_greedy, --tag, exp-03_greedy_dev150, --limit, '150']
+    cwd: /home/ben/task
+    script: /home/ben/task/eval_model.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.1}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.62
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "vLLM must log that the HF generation config overrode the default sampling params; and repeated runs should now be identical"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.04
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 662}
+  training_summary: {final_loss: null, steps: null, notes: "no training; weights are symlinks to exp-02/final"}
+  measurements:
+    - {metric: accuracy, value: 0.6333, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.0133}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/logs/exp-03.log
+    notes: "vLLM logged 'Default sampling parameters have been overridden by the model's Hugging Face generation config', so the override is in force; decoding is now deterministic, which removes sampling noise from every later comparison. One item (0.67%) hit the token cap in a repetition loop, the known greedy failure mode."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: inconclusive
+  mechanism_verdict: supported
+  summary: "Greedy scored 0.6333 vs 0.6200 for the same weights at T=1.0: +1.3 points on n=150, well inside the +-4 point stderr, so the size of the effect is not established. The mechanism is confirmed - vLLM does take its default sampling params from the checkpoint's generation_config.json, and the eval is now deterministic."
+  decision: adopt
+  next_step: "Ship greedy in every later checkpoint and re-measure the incumbent under a wider protocol (--limit 500, greedy) so that model-selection decisions are not made on +-4 point noise. Then scale the SFT corpus from 25.7k to 89.6k rows."

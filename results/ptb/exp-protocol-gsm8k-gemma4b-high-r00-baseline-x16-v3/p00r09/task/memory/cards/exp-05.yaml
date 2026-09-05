@@ -1,0 +1,102 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-05
+created_at: '2026-09-02T19:55:00Z'
+situation:
+  elapsed_h: 5.4
+  remaining_h: 4.6
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.605, protocol_n: 200}
+  trigger: "Three materially different training runs (exp-02 66k off-policy, exp-03 102k off-policy, exp-04 116k with 50k on-policy RFT) scored 0.605 / 0.590 / 0.590 on dev-200, a spread of 1.5 points against a per-arm stderr of 3.5. The protocol can no longer tell the arms apart, so no further data decision is informative until measurement precision improves."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-02..exp-04 rows"}
+    - {path: /home/ben/task/eval/exp-04_final.json, locator: "accuracy=0.59, stderr=0.0349"}
+  alternatives_rejected:
+    - {option: "Pick exp-02 on its 0.605 and spend the rest of the budget training", reason: "0.605 vs 0.590 is a coin flip at n=200; choosing on it is choosing on noise, and the wrong pick costs more than the 25 minutes a full-test ranking costs"}
+    - {option: "Score at n=500 instead of the full 1319", reason: "the full test set costs ~8 min per checkpoint versus ~4, and it removes sampling error from the final choice entirely (it is the same set the grader scores on)"}
+    - {option: "Also full-score exp-03", reason: "exp-03 is dominated by construction - same score as exp-04 at n=200 but without the on-policy half - and each full eval is 8 minutes of a 4.6h budget. It stays available if the top two are within a point"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "Two open questions block the last training decision. (1) Which of the three checkpoints is actually best - the n=200 protocol cannot separate them. (2) Whether the grader's fixed 10-shot system prefix is itself costing accuracy: 92% of training rows were zero-shot, so the tuned models may answer worse under the 10-shot context they are always graded in, which would make prefix-matched training, not another epoch, the right last intervention."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_final.json, locator: "accuracy=0.605 stderr=0.0347", observation: "arm 1"}
+    - {path: /home/ben/task/eval/exp-03_final.json, locator: "accuracy=0.59 stderr=0.0349", observation: "arm 2, -1.5 points, inside noise"}
+    - {path: /home/ben/task/eval/exp-04_final.json, locator: "accuracy=0.59 stderr=0.0349", observation: "arm 3, -1.5 points, inside noise"}
+    - {path: /home/ben/task/data/sft_exp02.jsonl, locator: "build_sft.py --fewshot-frac 0.08", observation: "only 8% of training rows carried any few-shot prefix, and never the grader's exact 10-shot block"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scoring exp-02/final and exp-04/final on the full 1319-item test set will separate them by more than the residual uncertainty of a full-set score, and a context probe on held-out GSM8K *train* questions will show whether the grader's 10-shot prefix changes the tuned model's accuracy relative to zero-shot."
+  mechanism: "Sampling error falls as 1/sqrt(n): n=200 gives +/-3.5 points, the full 1319 items give +/-1.3 and are the exact item set the grader uses, so the ranking it produces is the ranking that matters. The context probe isolates a variable the dev score confounds: every dev number so far was measured under the 10-shot prefix, so a prefix penalty would be invisible in it."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-02, magnitude: "unknown; the point is the ranking and the prefix delta, not a gain"}
+  falsified_if: "The two full-set scores land within 1 point of each other AND the probe shows |ten_shot - zero_shot| < 2 points; then neither measurement informs the last decision and the remaining budget should go straight to a second epoch."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_exp02.jsonl
+      source: "derived:exp-02 (no training in this card; this row records the data whose 8% few-shot fraction the probe is testing)"
+      n_examples: 66473
+      built_by: /home/ben/task/scripts/build_sft.py
+      build_command: [python, scripts/build_sft.py, --out, data/sft_exp02.jsonl]
+      selection: "unchanged from exp-02; this card trains nothing"
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect-ai + vllm 0.11.0 (evaluation), vllm offline (context probe)"
+    peft: "none"
+    hyperparams: {max_tokens: 1024, max_connections: 32, gpu_memory_utilization: 0.6, temperature: 0.0}
+    target_format: "n/a - measurement card"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [bash, scripts/exp05_measure.sh]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/exp05_measure.sh
+    env: {}
+    log: /home/ben/task/logs/exp-05_measure.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.45}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "1319", --max-connections, "32", --max-tokens, "1024", --gpu-memory-utilization, "0.6"]
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.605
+    path: /home/ben/task/eval/exp-02_final.json
+  diagnostic:
+    what: "greedy accuracy of exp-02/final on 400 held-out GSM8K *train* questions under three contexts: zero-shot, 2-shot, and the grader's exact 10-shot block (train items, shuffle seed 42)"
+    n: 400
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.42
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "measurement card, no training"}
+  measurements:
+    - {metric: accuracy, value: 0.5861, n: 1319, path: /home/ben/task/eval/exp-02_full1319.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.6202, n: 1319, path: /home/ben/task/eval/exp-04_full1319.json, delta_vs_comparator: 0.0341}
+  diagnostic_result: {value: 0.7175, path: /home/ben/task/analysis/exp-05_probe_exp02.json, notes: "exp-02 on 400 held-out-from-dev GSM8K *train* questions: zero-shot 0.735 (3 malformed), 2-shot 0.730 (4), grader-style 10-shot 0.7175 (11 malformed). The 10-shot prefix costs ~1.8 points and triples malformed outputs, but the effect is inside the n=400 noise band. Absolute values are inflated because those train questions are in the SFT data; only the between-context comparison is meaningful."}
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "On the full 1319-item test set exp-04 scores 0.6202 +/- 0.0134 and exp-02 0.5861 +/- 0.0136: RFT is +3.4 points ahead, the opposite of the -1.5 the n=200 dev protocol reported. The n=200 protocol was wrong about the ranking of every arm in this batch; exp-04's 'contradicted' verdict was an artefact of it. The few-shot probe found only a ~1.8 point prefix penalty, too small to be the next intervention."
+  decision: adopt
+  next_step: "Adopt exp-04/final as the incumbent (0.6202 full-test) and stage it as final_model immediately. Score every remaining candidate at n=1319 only. exp-06: a second epoch from exp-04/final over the same 116k union, which is the untested optimization axis and the only intervention that fits the remaining 4.2h."

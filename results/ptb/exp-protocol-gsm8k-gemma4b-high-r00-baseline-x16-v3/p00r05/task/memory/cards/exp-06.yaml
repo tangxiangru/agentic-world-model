@@ -1,0 +1,117 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T18:10:31Z'
+situation:
+  elapsed_h: 5.75
+  remaining_h: 4.25
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/ckpts/exp-03-greedy
+    score: {metric: accuracy, value: 0.7133, protocol_n: 150}
+  trigger: "Three one-epoch fine-tunes of the same base now sit inside one stderr of each other on dev-150 (exp-02/03 0.7133, exp-04 0.7067, exp-05 0.6800, stderr ~0.038) while disagreeing about which items they solve: every pairwise comparison against exp-03 shows 9-11 items fixed and 12-14 broken. Independent errors around a shared solution is the condition under which averaging weights helps."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp04_watch_rerun.json, locator: "fixed 11, still_failing 32, regressions 12", observation: "exp-04 vs exp-03 item churn"}
+    - {path: /home/ben/task/analysis/exp05_watch_rerun.json, locator: "fixed 9, still_failing 34, regressions 14", observation: "exp-05 vs exp-03 item churn, from an independent run over a different corpus"}
+  alternatives_rejected:
+    - {option: "Just pick the best of the three at --limit 500 and stop", reason: "that comparison is happening anyway as the final selection; the soup costs ~5 min to build and ~4 min to score, so it can be added to the same shortlist rather than replacing it"}
+    - {option: "Another training run", reason: "4.25 h left, and two successive training interventions (exp-04, exp-05) each moved dev-150 by less than one stderr in the wrong direction; a fourth is not the best use of the remaining GPU time"}
+    - {option: "Greedy ensembling / self-consistency at inference", reason: "the grader scores one completion per item and evaluate.py is not modifiable; there is no place to put a vote"}
+    - {option: "Weighted soup favouring exp-02", reason: "no held-out signal to fit the weights on that is not the same 150 items the decision is made on; uniform is the assumption-free choice"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/soup.py, --models, ckpts/exp-02/final, ckpts/exp-04/final, ckpts/exp-05/final, --out, ckpts/exp-06-soup3], outcome: "state dicts key-identical across all three; averaged in fp32, cast back to bf16, saved with tokenizer and processor files"}
+    - {command: [python, scripts/set_decode.py, ckpts/exp-06-soup3, --preset, greedy], outcome: "vLLM default sampling params -> {'temperature': 0.0}"}
+problem:
+  statement: "Three fine-tunes are tied within noise on dev-150 and each is wrong on a partly different set of items (43, 44 and 48 wrong out of 150, with only 32-34 items wrong in common with exp-03). Choosing one of them discards the other two's correct items."
+  evidence:
+    - {path: /home/ben/task/eval/exp03_dev150.json, locator: "accuracy 0.7133, stderr 0.0370", observation: "incumbent"}
+    - {path: /home/ben/task/eval/exp04_dev150.json, locator: "accuracy 0.7067", observation: "RFT continuation of exp-02"}
+    - {path: /home/ben/task/eval/exp05_dev150.json, locator: "accuracy 0.6800", observation: "independent from-base run on 116159 rows"}
+  affected_share: null
+  failure_examples:
+    - {id: exp03-w1, source: /home/ben/task/analysis/exp03_dev150_wrong.jsonl, question: "dev-150 item wrong under exp-03 but solved by exp-04 or exp-05", gold: "see file", model_output: "see file", failure: "wrong plan/arithmetic that a sibling checkpoint gets right"}
+    - {id: exp05-w1, source: /home/ben/task/analysis/exp05_dev150_wrong.jsonl, question: "one of the 14 items exp-05 breaks relative to exp-03", gold: "see file", model_output: "see file", failure: "regression unique to the larger-corpus run"}
+    - {id: exp04-w1, source: /home/ben/task/analysis/exp04_dev150_wrong.jsonl, question: "one of the 12 items exp-04 breaks relative to exp-03", gold: "see file", model_output: "see file", failure: "regression unique to the RFT run"}
+  watch_set:
+    path: /home/ben/task/analysis/exp03_dev150_wrong.jsonl
+    n: 43
+    selection: "every dev-150 item the incumbent exp-03 gets wrong under greedy decoding"
+hypothesis:
+  claim: "Uniformly averaging the weights of exp-02, exp-04 and exp-05 - three one-epoch fine-tunes sharing the google/gemma-3-4b-pt initialisation - increases greedy dev-150 accuracy relative to exp-03."
+  mechanism: "Fine-tunes from a common initialisation stay in one loss basin, so their weights can be averaged directly. The averaged model keeps the component of each run that the three agree on and cancels the run-specific noise that shows up as the observed fixed/broken churn."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-03
+    magnitude: "+1 to +4 pts"
+  falsified_if: "the soup's greedy dev-150 accuracy is at or below exp-03's 0.7133, or the merged weights fail to produce well-formed output (non-termination above 2/150)."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-06-soup3/config.json
+      source: "derived:exp-02 + derived:exp-04 + derived:exp-05 - no training data is read; the inputs are the three checkpoints' weights"
+      n_examples: 3
+      built_by: /home/ben/task/scripts/soup.py
+      build_command: [python, scripts/soup.py, --models, ckpts/exp-02/final, ckpts/exp-04/final, ckpts/exp-05/final, --out, ckpts/exp-06-soup3]
+      selection: "uniform 1/3 average of every parameter, accumulated in fp32 and cast to bf16; tokenizer and processor files copied from the base snapshot"
+      contamination_check: not_run
+      mixture_weight: 1.0
+  method:
+    family: merge
+    framework: transformers 4.57.3 state_dict average
+    peft: none
+    hyperparams: {}
+    target_format: "unchanged: chain, then a single 'ANSWER: <number>' line, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/exp-06-soup3, exp06_dev150, '150']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/exp-06.log
+  output_dir: /home/ben/task/ckpts/exp-06-soup3
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, '{checkpoint}', '{tag}', '150']
+    dev_set: "official --limit 150 (gsm8k test, dataset order), greedy decode pinned by generation_config.json"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: 0.7133
+    path: /home/ben/task/eval/exp03_dev150.json
+  diagnostic:
+    what: "non-termination rate and missing-marker rate under greedy - a bad merge shows up as broken formatting before it shows up as lost accuracy (exp-03: 2/150 and 2/150)"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-06-soup3
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06-soup3, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; uniform fp32 average of three state dicts, cast to bf16"}
+  measurements:
+    - {metric: accuracy, value: 0.6333, n: 150, path: /home/ben/task/eval/exp06_dev150.json, delta_vs_comparator: -0.08}
+  diagnostic_result:
+    value: 0.013
+    path: /home/ben/task/analysis/exp06_dev150_wrong.jsonl
+    notes: "The merge is not broken: 2/150 non-terminating and 2/150 without a marker, identical to exp-03, mean completion 539 chars, max 5418. The weights average cleanly and the model writes well-formed solutions - they are just wrong more often."
+  watch_set_result: {fixed: 10, still_failing: 33, regressions: 22, path: /home/ben/task/analysis/exp06_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "dev-150 0.7133 -> 0.6333 (-8.0 pts), the largest regression of any card and more than two stderr. Averaging fixed 10 of exp-03's failures but broke 22 working items, so the three runs' disagreement is not interchangeable noise around a shared solution - the weights encode genuinely different solutions and interpolating them lands between basins."
+  decision: reject
+  next_step: "Abandon the merge line - a 2-way soup of exp-02 and exp-05 was built (ckpts/exp-07-soup2) but scoring it is not worth the remaining time given a -8 pt result on the 3-way. Spend the rest of the budget on the decision that is actually load-bearing: exp-07 re-scores exp-03 (0.7133) and exp-04 (0.7067) at --limit 500 so the submitted checkpoint is chosen on 500 items rather than on a 0.038-stderr tie at 150."

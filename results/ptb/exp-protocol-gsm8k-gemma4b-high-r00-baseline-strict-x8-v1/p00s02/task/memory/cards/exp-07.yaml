@@ -1,0 +1,111 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-04T02:56:27Z'
+situation:
+  elapsed_h: 7.8
+  remaining_h: 2.2
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.77333, protocol_n: 150}
+  trigger: "exp-06 tied exp-05 at 0.77333 on n=150, so the last training lever is spent and what remains unverified is the artifact itself: final_model/ has never been scored, only the checkpoint directory it was copied from."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp06_dev150.json, locator: accuracy, observation: "0.77333, identical to exp-05 - no further training is worth the remaining time"}
+    - {path: /home/ben/task/logs/finalize_v2.log, locator: "tail", observation: "final_model/ loads on CPU with transformers (4.30B params, bf16) and carries the greedy generation_config, but it has not been run through evaluate.py"}
+  alternatives_rejected:
+    - {option: "One more training run (RFT, or a third prefix-mixed pass)", reason: "exp-06 showed the continuation saturated, and 2.2 h is not enough to sample, train, evaluate and repackage without risking the deliverable"}
+    - {option: "Score exp-06 at n=500 as well and pick the winner", reason: "two 500-item evaluations do not fit safely in the time left; exp-06 is not ahead on any measurement, so the tie-break goes to exp-05, which is also the one already packaged"}
+    - {option: "Trust the n=150 number and stop", reason: "the pitfall list's final_model_not_loadable case is exactly this one - an artifact that was never loaded the way the grader loads it; and 150 items give a +/-3.4 point error bar on the number that will be reported"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, finalize.py, --src, /home/ben/task/ckpts/exp-05/final, --dst, /home/ben/task/final_model, --decode, greedy], outcome: "copied, tokenizer/processor files present, architecture Gemma3ForConditionalGeneration -> templates/gemma3.jinja, loaded on CPU at 4.30B params bf16, generation_config greedy"}
+problem:
+  statement: "Two things about the deliverable are unmeasured. First, final_model/ is a copy of exp-05's checkpoint plus a rewritten generation_config.json, and the grader loads it with vLLM from a fresh process by a path that contains no model name - so the chat template is resolved from config.json's architecture, a path never exercised. Second, every number in this batch rests on 150 items, whose standard error is 3.4 points; the difference between exp-05 and exp-03 (3.3 points) is inside it."
+  evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "L98-135 model_type/template_kwargs", observation: "with 'gemma' absent from the path, the template is chosen from config.json['architectures'][0]"}
+    - {path: /home/ben/task/eval/exp05_dev150.json, locator: stderr, observation: "0.0343 - the error bar on every comparison made in this batch"}
+  affected_share: null
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_gsm8ktrain300.jsonl
+    n: 300
+    selection: "the same 300 held-out GSM8K TRAIN problems used since exp-02; the benchmark test split is never read"
+hypothesis:
+  claim: "Scoring final_model/ itself under the official harness at --limit 500 reproduces exp-05's n=150 result within its error bar and confirms the artifact loads and terminates correctly through the grader's own path."
+  mechanism: "final_model/ is a byte copy of the exp-05 weights with only generation_config.json rewritten, so the accuracy should differ from 0.77333 only by the sampling of items; a larger n narrows the error bar from 3.4 to about 1.9 points."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-05
+    magnitude: "no directional change expected: this card verifies the artifact and tightens the estimate rather than intervening"
+  falsified_if: "final_model/ fails to load or is served with the wrong template, or its n=500 accuracy falls below 0.70 - more than three standard errors under exp-05's n=150 result, which would mean the packaged artifact is not the model that was measured."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/NO_TRAINING_DATA.md
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "verification card: nothing is trained. The only corpus touched is the official gsm8k test split, read-only inside inspect_evals (first 500 items), plus inspect's 10-shot prefix from the gsm8k TRAIN split."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: inspect_ai + vllm 0.11.0, loading /home/ben/task/final_model from a fresh process
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-05"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, final_model, --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/final_model_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/eval_final500.log
+  output_dir: /home/ben/task/eval
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.4}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, '500', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 500
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.77333
+    path: /home/ben/task/eval/exp05_dev150.json
+  diagnostic:
+    what: "the vLLM startup lines and per-sample stop reasons: the chat template must resolve to templates/gemma3.jinja from the architecture, the generation-config override line must appear (greedy is in force), and truncation must stay near zero over 500 items"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 313}
+    - {path: /home/ben/task/ckpts/exp-05/final, step: 313}
+  training_summary: {final_loss: null, steps: null, notes: "no training; verification of the packaged artifact"}
+  measurements:
+    - {metric: accuracy, value: 0.774, n: 500, path: /home/ben/task/eval/final_model_dev500.json, delta_vs_comparator: 0.00067}
+  diagnostic_result:
+    value: 0.994
+    path: /home/ben/task/analysis/exp-07_diag.json
+    notes: "The grader resolved chat_template=templates/gemma3.jinja from config.json's architecture with no model name in the path, and logged that it took its sampling defaults from the checkpoint's generation_config (greedy). 497 of 500 generations stopped on <end_of_turn>, 3 hit the token cap, 99.4% carried a well-formed 'ANSWER: ' line. stderr fell from 0.0343 (n=150) to 0.0187 (n=500)."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-05_probe.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "final_model/ scores 0.7740 +/- 0.0187 over 500 official items, within 0.07 points of the 0.77333 measured on exp-05's checkpoint at n=150. The artifact loads through the grader's own path, gets the right template, decodes greedily, and terminates on 497 of 500 items."
+  decision: adopt
+  next_step: "Ship. The untried lines, in the order a next batch should take them: rejection-sampling fine-tuning from exp-05 on the ~13% of GSM8K-train-derived problems it still misses; a from-base run on the full 151.9k rows with the few-shot mixture present from step one rather than bolted on afterwards; and the MATH-derived half of OpenMathInstruct-2 as a generalisation check."

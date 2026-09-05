@@ -1,0 +1,113 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-10
+created_at: '2026-09-02T20:52:00Z'
+
+situation:
+  elapsed_h: 8.0
+  remaining_h: 2.0
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7089, protocol_n: 1319}
+  trigger: "2.0 h remain and the shipped artifact is already verified, so one more candidate can be tried at zero risk - it is only installed if it wins. exp-07 showed a new *source* hurts (style drift) while exp-02 showed a second epoch over data already seen helps (+4 pts at n=150); exp-05's data has been seen exactly once."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-02_ep1_dev150.json, locator: "0.7067 at epoch 1 vs 0.7467 at epoch 2 on the same 90k rows"}
+    - {path: /home/ben/task/memory/cards/exp-07.yaml, locator: "result.diagnostic_result", observation: "a third source moved median completion length +37% and cost 3.2 pts - style drift, not a data shortage"}
+    - {path: /home/ben/task/eval/exp-09_final_model_full.json, locator: "accuracy=0.7089 on n=1319 - the number to beat"}
+  alternatives_rejected:
+    - {option: "A fourth data source", reason: "exp-07 just showed that a source whose solution style differs from the target costs points; there is no time to style-filter a new corpus"}
+    - {option: "Two-way soup of exp-02/final and exp-05/final", reason: "the three-way soup already tied the best ingredient exactly (exp-06); dropping the weakest member is unlikely to turn a tie into a win"}
+    - {option: "Do nothing and stop here", reason: "the run is safe either way - final_model/ is verified and will only be replaced on a measured win - so the only thing at stake is unused GPU time"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, train_sft.py, --dry-run, --model, ckpts/exp-05/final, --data, data/sft_mix_v2.jsonl], outcome: "55459 rows, 28.0M tokens - measured at exp-05's 18.1 samples/s that is ~51 min, which fits inside the 2.0 h with margin for the eval and the swap"}
+
+problem:
+  statement: "exp-05/final saw its 55506 OpenMathInstruct-2 rows exactly once, at a learning rate that decayed to zero by the end of that single epoch. exp-02's two-epoch run is the only evidence in this session about a second pass, and it was positive, but it has never been tested at this point on the curve."
+  evidence:
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "setup.method.hyperparams", observation: "epochs 1.0, cosine to zero - one pass only"}
+    - {path: /home/ben/task/analysis/exp-09_final_model_full.json, locator: "accuracy=0.7089", observation: "384 of 1319 still wrong, output contract clean, so the residual is reasoning"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+hypothesis:
+  claim: "A second epoch from exp-05/final over the same 55506 OpenMathInstruct-2 rows, at half the learning rate, raises n=500 accuracy above exp-05/final's 0.704."
+  mechanism: "The rows are the same source and the same solution style the model is already fluent in, so the style-drift failure mode of exp-07 cannot apply. What a second pass adds is what exp-02's epoch 2 added over its epoch 1: more gradient on solutions the model has seen once, at a point where the schedule had annealed before the data was exhausted."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-05, magnitude: "+1 to +4 pts at n=500, by analogy with exp-02's epoch-1 to epoch-2 step"}
+  falsified_if: "n=500 accuracy is at or below exp-05/final's 0.704, i.e. the second pass memorises rather than generalises."
+
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-05/final
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_mix_v2.jsonl
+      source: "nvidia/OpenMathInstruct-2 split=train_1M (augmented_gsm8k 40506, augmented_math 15000) - the same file exp-05 trained on"
+      n_examples: 55506
+      built_by: /home/ben/task/prep_data.py
+      build_command: [python, prep_data.py]
+      selection: "unchanged from exp-05: questions disjoint from sft_mix_v1/rft_mix_v1/dev_aug500; at most 2 solutions per question; trailing boxed sentence stripped. No item from the gsm8k TEST split is read at any point."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full fine-tune, flash_attention_2, token-budget batch sampler"
+    peft: "none (vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 1.0, batch_size: 10240, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 1}
+    target_format: "identical to exp-05; seed 1 rather than 0 so the batch order and the 6% few-shot draw differ from the first pass"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --model, /home/ben/task/ckpts/exp-05/final, --data, /home/ben/task/data/sft_mix_v2.jsonl, --out, /home/ben/task/ckpts/exp-10, --epochs, '1', --lr, '5e-6', --max-tokens, '10240', --grad-accum, '4', --seed, '1', --attn, flash_attention_2]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-10.log
+  output_dir: /home/ben/task/ckpts/exp-10
+  checkpoints:
+    every_steps: null
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.0}
+
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '500', --max-connections, '48', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.704
+    path: /home/ben/task/eval/exp-05_final_dev500.json
+  diagnostic:
+    what: "median completion length must stay near exp-05's 407 chars - the exp-07 failure showed length drift is the leading indicator of a bad epoch here"
+    n: 500
+    metric: accuracy
+    direction: higher
+
+result:
+  execution: completed
+  wall_h: 0.85
+  output_checkpoint: /home/ben/task/ckpts/exp-10/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-10/checkpoint-723, step: 723}
+    - {path: /home/ben/task/ckpts/exp-10/final, step: 723}
+  training_summary: {final_loss: 0.3177, steps: 723, notes: "train_runtime 3069 s; train_loss 0.3177 against exp-05's 0.3324 on the same rows - a small drop, consistent with a second pass rather than memorisation"}
+  measurements:
+    - {metric: accuracy, value: 0.714, n: 500, path: /home/ben/task/eval/exp-10_final_dev500.json, delta_vs_comparator: 0.010}
+  diagnostic_result:
+    value: 401.0
+    path: /home/ben/task/analysis/exp-10_final_dev500.json
+    notes: "median completion 401 chars against exp-05's 407 - no style drift, unlike exp-07's 556. max_tokens share 0.012, multiple-ANSWER-marker share 0.000: the output contract is intact."
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "n=500 0.704 -> 0.714 (+1.0 pt). The sign matches the prediction and the style diagnostic is clean, but +1.0 pt is 0.5 sigma at n=500 - this is a point estimate, not a demonstrated win, and it is well below the +4 pts exp-02's second epoch bought. Treating it as decisive would be reading noise."
+  decision: iterate
+  next_step: "exp-11: settle exp-10 vs the shipped exp-05 on the full 1319-item test set, where sigma is 1.25 pts, instead of installing a new final_model on a 0.5-sigma delta."

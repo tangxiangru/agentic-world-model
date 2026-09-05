@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T23:54:27Z'
+situation:
+  elapsed_h: 1.92
+  remaining_h: 8.08
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.46, protocol_n: 150}
+  trigger: 'exp-02 scores 0.46 on dev-150 but 0.716 greedy on 250 held-out GSM8K train items. In the eval log inspect sends only max_tokens, so vLLM fills the sampling parameters from the checkpoint generation_config.json - which the base snapshot ships as do_sample true, top_k 64, top_p 0.95 and no temperature, i.e. the benchmark samples at temperature 1.0.'
+  trigger_evidence:
+    - {path: /home/ben/task/logs/2026-09-02T22-06-04+00-00_gsm8k_fevqYTfdKK7ZsN856raWLA.json, locator: 'samples[0].events[model].call.request', observation: 'the request body carries only messages, model and max_tokens: 4000 - no temperature, top_p or top_k'}
+    - {path: /home/ben/task/analysis/exp-02_probe250.json, locator: 'accuracy', observation: '0.716 greedy with the same template and 10-shot system message'}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: 'whole file', observation: 'do_sample true, top_k 64, top_p 0.95, no temperature key - inherited from the base snapshot through Trainer.save_model'}
+  alternatives_rejected:
+    - {option: 'Pass a temperature to evaluate.py', reason: 'it has no such flag and rule 5 forbids modifying it; the decode path has to be fixed inside the checkpoint'}
+    - {option: 'Set do_sample=false and leave temperature unset', reason: 'vLLM ModelConfig.get_diff_sampling_param reads only repetition_penalty, temperature, top_k, top_p, min_p and max_new_tokens from generation_config.json - do_sample is not in that list and would be silently ignored'}
+    - {option: 'Skip the check and spend the time on more training', reason: 'a 25-point decode gap would be inherited by every later card and would make each training delta unreadable'}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: 'The checkpoint is graded under sampling it did not choose. exp-02 emits a correct chain far more often than dev-150 suggests, but each of its ~90 output tokens is drawn at temperature 1.0 with top_k 64, so one unlucky digit anywhere in the chain changes the final number. The weights are not what limits this gap; the shipped generation_config.json is.'
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_dev150_tags.json, locator: 'summary.tags', observation: 'all 150 completions terminate with exactly one answer marker, median 296 chars; every one of the 81 failures is tagged wrong_number, so nothing is lost to format or run-on'}
+    - {path: /home/ben/task/analysis/exp-02_probe250.json, locator: 'accuracy', observation: 'same weights greedy: 0.716 on 250 held-out train items vs 0.46 sampled on dev-150'}
+  affected_share: null
+  failure_examples:
+    - {id: train-95, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'Alice has 20 quarters. She wants to exchange them for nickels and so she goes to the bank. After getting back from the bank, she discovers that 20% of the nickels are iron nickels worth $3 each. What is the total value of her money now?', gold: '64', model_output: '...the total value of the non-iron nickels is $5 - $12 = -$7 ... ANSWER: -7', failure: 'sets up the wrong quantity (subtracts the iron value from the total instead of adding), well-formed chain, wrong number'}
+  watch_set:
+    path: /home/ben/task/analysis/exp-02_watch68.jsonl
+    n: 71
+    selection: 'every held-out GSM8K train item exp-02 gets wrong under greedy decoding (71 of 250, analysis/exp-02_probe250.json)'
+hypothesis:
+  claim: 'Writing temperature 0.0 (with top_p 1.0, top_k 0) into the checkpoint generation_config.json, changing no weights, raises dev-150 accuracy above exp-02''s 0.46.'
+  mechanism: 'inspect sends no sampling parameters, so vLLM applies the checkpoint generation_config as the request default. temperature is the one key in that file that switches vLLM to greedy decoding, which removes the per-token noise that turns a correct chain into a wrong number.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: '+15 to +25 pts on dev-150, if the probe/eval gap is decode noise rather than a train/test item-difficulty difference'
+  falsified_if: 'dev-150 accuracy stays within noise of 0.46 (<= 0.51), which would mean the gap is item difficulty and greedy decoding buys nothing.'
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: 'openai/gsm8k@740312add88f781978c0658806c59bc2815b9866 train split + nvidia/OpenMathInstruct-2 train_1M GSM subsets (inherited from exp-02; this card trains nothing)'
+      n_examples: 92435
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --omi-max, '120000', --omi-cap-per-problem, '1', --gsm-repeat, '3', --out, data/sft_v2.jsonl]
+      selection: 'no new data; the parent checkpoint was trained on this file in exp-02'
+      contamination_check: passed
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: 'vllm 0.11.0 generation_config defaults, rewritten by scripts/set_decode_config.py'
+    peft: 'none (weights untouched; ckpts/exp-03/final hardlinks exp-02''s safetensors)'
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: 'unchanged from exp-02'
+    stop_token: '<end_of_turn>'
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/set_decode_config.py, --model, /home/ben/task/ckpts/exp-03/final, --mode, greedy]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/set_decode_config.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: 'official --limit 150 (first 150 of openai/gsm8k test via inspect_evals/gsm8k, fewshot=10 seed=42)'
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.46
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: 'failure tags and median completion length from analyze_eval.py; greedy must not shift failures into run-on or missing-marker, which would mean it trades sampling noise for looping'
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.13
+  output_checkpoint: /home/ben/task/ckpts/exp-03/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03/final, step: 1261}
+  training_summary: {final_loss: null, steps: null, notes: 'no training; ckpts/exp-03/final hardlinks exp-02''s safetensors and differs only in generation_config.json (do_sample false, temperature 0.0, top_p 1.0, top_k 0)'}
+  measurements:
+    - {metric: accuracy, value: 0.66, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.20}
+  diagnostic_result:
+    value: 306.5
+    path: /home/ben/task/analysis/exp-03_dev150_tags.json
+    notes: 'median completion 306 chars (sampled: 296), max 817 (sampled: 996); tags are still 100% terminating with one answer marker and all 51 failures are wrong_number. Greedy bought 20 points without trading sampling noise for looping.'
+  watch_set_result: {fixed: 0, still_failing: 71, regressions: 0, path: /home/ben/task/analysis/exp-02_probe250.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'dev-150 0.46 -> 0.66 (+20) with identical weights; the only change is temperature 0.0 in generation_config.json. The benchmark was sampling exp-02 at temperature 1.0 with top_k 64 because inspect sends no sampling parameters and vLLM defaults to the checkpoint config.'
+  decision: adopt
+  next_step: 'Greedy decoding is now the baseline for every later card, and every future checkpoint must have set_decode_config.py applied before it is scored. The watch set is unchanged (it was measured greedy already): 71 held-out items still fail on reasoning. exp-04 attacks those with rejection-sampled self-solutions plus a larger corpus.'

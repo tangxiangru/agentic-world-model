@@ -1,0 +1,114 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-02T13:51:21Z'
+situation:
+  elapsed_h: 1.35
+  remaining_h: 8.6
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.5533, protocol_n: 150}
+  trigger: "Reading the harness end to end showed the graded decode is stochastic and nobody chose it: inspect_ai only forwards generation fields that are set (inspect_ai/model/_openai.py:233 'if config.temperature is not None'), evaluate.py sets none, so vLLM falls back to --generation-config auto and reads top_k=64/top_p=0.95 out of the checkpoint's generation_config.json with no temperature, i.e. T=1.0. The vLLM server log confirms it: 'Default sampling parameters have been overridden by the model's Hugging Face generation config'."
+  trigger_evidence:
+    - {path: /home/ben/task/logs/eval_base_dev150.log, locator: "grep 'Default sampling parameters have been overridden'", observation: "vLLM applied the model dir's generation config as its default sampling params"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95, no temperature", observation: "inherited unchanged from the base snapshot by trainer.save_model"}
+  alternatives_rejected:
+    - {option: "Leave sampling at T=1.0 and buy the same points with more training", reason: "a retrain costs about an hour of the budget; this costs one file write and one eval"}
+    - {option: "Pass --temperature via evaluate.py", reason: "evaluate.py exposes no such flag and rule 5 forbids modifying it; the model directory is the only channel, and it is the same channel the final submission will use"}
+    - {option: "Low-temperature sampling (T=0.2) instead of greedy", reason: "the grader scores one sample per item, so there is no diversity to exploit; greedy is the argmax of the same distribution"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, scripts/set_decode.py, ckpts/exp-03-greedy, --preset, greedy], outcome: "GenerationConfig.to_diff_dict() over the written file yields exactly {'temperature': 0.0} among vLLM's readable sampling params (repetition_penalty/temperature/top_k/top_p/min_p/max_new_tokens), so vLLM will decode greedily and top_k/top_p are gone"}
+problem:
+  statement: "exp-02's 0.5533 was measured under temperature-1.0 nucleus sampling that no one selected: it is an artefact of the base snapshot's generation_config.json surviving into the fine-tuned checkpoint. Single-sample GSM8K grading pays for every sampling deviation from the mode."
+  evidence:
+    - {path: /home/ben/task/analysis/exp02_dev150_wrong.jsonl, locator: "67 wrong items", observation: "format is clean (0 non-terminating, 0 missing marker); the residue is answer content, part of which is sampling noise around a correct mode"}
+    - {path: /home/ben/task/eval/exp02_dev150.json, locator: "accuracy 0.5533, stderr 0.0407", observation: "n=150 sampled decode"}
+  affected_share: null
+  failure_examples:
+    - {id: exp02-w1, source: /home/ben/task/analysis/exp02_dev150_wrong.jsonl, question: "dev-150 item scored wrong under exp-02", gold: "see file", model_output: "see file (well-formed chain, wrong final number)", failure: "arithmetic or plan error under sampled decode"}
+    - {id: exp02-w2, source: /home/ben/task/analysis/exp02_dev150_wrong.jsonl, question: "dev-150 item scored wrong under exp-02", gold: "see file", model_output: "see file", failure: "arithmetic or plan error under sampled decode"}
+    - {id: exp02-w3, source: /home/ben/task/analysis/exp02_dev150_wrong.jsonl, question: "dev-150 item scored wrong under exp-02", gold: "see file", model_output: "see file", failure: "arithmetic or plan error under sampled decode"}
+  watch_set:
+    path: /home/ben/task/analysis/exp02_dev150_wrong.jsonl
+    n: 67
+    selection: "every dev-150 item exp-02 got wrong under the inherited sampled decode"
+hypothesis:
+  claim: "Writing temperature 0.0 (and dropping top_k/top_p) into the checkpoint's generation_config.json, with the weights untouched, increases dev-150 accuracy relative to exp-02's sampled decode."
+  mechanism: "GSM8K is graded on one sample per item, so accuracy tracks the probability that the sampled chain equals the model's modal chain. At T=1.0 with top_p 0.95 every token draw can leave the mode and a single arithmetic slip loses the item; greedy decoding always takes the mode."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +8 pts"
+  falsified_if: "greedy dev-150 accuracy is at or below exp-02's 0.5533."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/ckpts/exp-03-greedy/generation_config.json
+      source: "local - byte-identical weights to exp-02; only generation_config.json differs"
+      n_examples: 1
+      built_by: /home/ben/task/scripts/set_decode.py
+      build_command: [python, scripts/set_decode.py, ckpts/exp-03-greedy, --preset, greedy]
+      selection: "temperature 0.0, do_sample false; top_k/top_p removed; eos_token_id [1,106] kept"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 (--generation-config auto)
+    peft: none
+    hyperparams: {}
+    target_format: "unchanged from exp-02: chain, then 'ANSWER: <number>', then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [bash, scripts/run_eval.sh, /home/ben/task/ckpts/exp-03-greedy, exp03_dev150, '150']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/run_eval.sh
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.1}
+evaluation:
+  protocol:
+    command: [bash, scripts/run_eval.sh, '{checkpoint}', '{tag}', '150']
+    dev_set: "official --limit 150 (gsm8k test, dataset order)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.5533
+    path: /home/ben/task/eval/exp02_dev150.json
+  diagnostic:
+    what: "mean completion length and non-termination rate under greedy - greedy decoding of a small model can enter repetition loops, which would show up as completions hitting the 4000-token cap"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.05
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1563}
+  training_summary: {final_loss: null, steps: null, notes: "no training - weights are byte-identical to exp-02/final; only generation_config.json differs"}
+  measurements:
+    - {metric: accuracy, value: 0.7133, n: 150, path: /home/ben/task/eval/exp03_dev150.json, delta_vs_comparator: 0.16}
+  diagnostic_result:
+    value: 0.013
+    path: /home/ben/task/analysis/exp03_dev150_wrong.jsonl
+    notes: "Greedy repetition risk is real but small: 2/150 completions (0.013) ran to the 4000-token cap without stopping, up from 0/150 under sampling, and those same 2 carry no ANSWER marker (max completion 13411 chars vs 2816). Mean length 565 -> 696 chars. Net effect is strongly positive."
+  watch_set_result: {fixed: 31, still_failing: 36, regressions: 7, path: /home/ben/task/analysis/exp03_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.5533 -> 0.7133 (+16.0 pts) from a one-file decode change, weights untouched. 31 of exp-02's 67 failures were sampling noise around a correct mode; 7 items regressed, 2 of them into greedy repetition loops that never terminate."
+  decision: adopt
+  next_step: "Two lines follow. (a) The 2 non-terminating greedy loops are a submission risk worth watching. (b) exp-04: rejection-sampling fine-tuning - sample k solutions per gsm8k-train-derived question from this checkpoint, keep the ones that reach the gold answer, and train on them to move the mode itself rather than the decode around it."

@@ -1,0 +1,110 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T20:47:02Z'
+situation:
+  elapsed_h: 1.6
+  remaining_h: 8.4
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.62667, protocol_n: 150}
+  trigger: "exp-02's probe diagnostic: the same checkpoint scores 0.800 on probe-300 with greedy decoding and 0.700 with the sampling the grader inherits from generation_config (do_sample, top_k 64, top_p 0.95, T=1.0) - a 10-point decode penalty that has nothing to do with the weights."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-02_probe.json, locator: "summary.fewshot_greedy vs summary.fewshot_sampled_evaldefault", observation: "0.800 vs 0.700 on the same checkpoint and the same 300 prompts"}
+    - {path: /home/ben/task/logs/exp-01.log, locator: "APIServer line 'Default sampling parameters have been overridden by the model's Hugging Face generation config'", observation: "vLLM takes its default sampling params from the checkpoint's generation_config.json, and evaluate.py sends no temperature"}
+  alternatives_rejected:
+    - {option: "Leave the inherited sampling and try to recover the 10 points by training", reason: "the penalty is decode variance on an already-correct chain; no amount of SFT removes sampling noise, and the fix costs one json file"}
+    - {option: "Low temperature (0.2) instead of greedy, to keep some diversity", reason: "only one completion is scored, so diversity has no value here; greedy is the argmax of the same distribution"}
+    - {option: "Skip the measurement and just ship greedy", reason: "the probe over-states absolute level (its problems come from the GSM8K TRAIN split); the decode change must be confirmed under the official protocol before it is adopted"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, set_decode.py, --model, ckpts/exp-03-greedy, --mode, greedy], outcome: "generation_config.json now do_sample=false, temperature=0.0, top_p=1.0, top_k=0; eos_token_id [1,106] untouched"}
+problem:
+  statement: "exp-02's weights are graded through a sampling policy the checkpoint itself supplies. evaluate.py passes no temperature, so vLLM falls back to generation_config.json, which was copied verbatim from the pretrained snapshot (do_sample true, top_k 64, top_p 0.95, no temperature -> T=1.0). Every graded answer is therefore a random draw rather than the model's best guess."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_probe.json, locator: "summary", observation: "greedy 0.800 / sampled 0.700 few-shot; greedy 0.817 / sampled 0.747 zero-shot - the penalty reproduces under both prompt shapes"}
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "whole file", observation: "do_sample true, top_k 64, top_p 0.95 - inherited from the base snapshot, never chosen for this task"}
+  affected_share: 0.1
+  failure_examples: []
+  watch_set:
+    path: /home/ben/task/data/probe_gsm8ktrain300.jsonl
+    n: 300
+    selection: "the same 300 held-out GSM8K TRAIN problems used in exp-02; the benchmark test split is never read"
+hypothesis:
+  claim: "Setting greedy decoding in the shipped generation_config.json (do_sample false, temperature 0, top_p 1, top_k 0) raises official-protocol accuracy relative to exp-02's 0.62667, with identical weights."
+  mechanism: "GSM8K is scored on a single completion, so sampling only adds variance to a chain of thought where any one wrong token can break the arithmetic. Taking the argmax removes that variance; vLLM reads the policy from the checkpoint's generation_config.json."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+7 to +12 points, mirroring the 10-point greedy/sampled gap measured on probe-300"
+  falsified_if: "Official-protocol accuracy under greedy is not above exp-02's 0.62667 by more than one standard error (0.0396), i.e. stays below ~0.666."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/eval/NO_TRAINING_DATA.md
+      source: local
+      n_examples: 1
+      built_by: null
+      build_command: []
+      selection: "decode-config card: no training. The weights are exp-02's, copied byte-for-byte; only generation_config.json differs."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 default sampling params from generation_config.json
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged from exp-02"
+    stop_token: <end_of_turn>
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/exp-03-greedy, --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/exp03_dev150.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/eval_exp03.log
+  output_dir: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints: {every_steps: null, keep: last}
+  budget: {gpu: H100-80GB, planned_h: 0.2}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official --limit 150
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.62667
+    path: /home/ben/task/eval/exp02_dev150.json
+  diagnostic:
+    what: "share of graded generations that hit the 4000-token cap, and format compliance, read from the inspect json log - greedy decoding must not introduce repetition loops that fail to terminate"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.09
+  output_checkpoint: /home/ben/task/ckpts/exp-03-greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-03-greedy, step: 1088}
+  training_summary: {final_loss: null, steps: null, notes: "no training; exp-02 weights with generation_config.json set to greedy"}
+  measurements:
+    - {metric: accuracy, value: 0.74, n: 150, path: /home/ben/task/eval/exp03_dev150.json, delta_vs_comparator: 0.11333}
+  diagnostic_result:
+    value: 1.0
+    path: /home/ben/task/analysis/exp-03_diag.json
+    notes: "All 150 generations terminated (stop_reason=stop, 0 hit the 4000-token cap) and 150/150 contained a well-formed 'ANSWER: ' line. Greedy decoding introduced no repetition loops."
+  watch_set_result: {fixed: null, still_failing: null, regressions: null, path: /home/ben/task/analysis/exp-02_probe.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Identical weights, one json file changed: 0.6267 -> 0.7400 on the official protocol (+11.3 points, 2.9 standard errors). The probe predicted +10; the mechanism (sampling variance on a single scored completion) held."
+  decision: adopt
+  next_step: "Greedy is now part of every shipped checkpoint. exp-04: scale the SFT data from 69.7k to the full 151.9k GSM8K-derived OpenMathInstruct-2 rows, since data scale is the remaining lever the dataset's own scaling curve supports."

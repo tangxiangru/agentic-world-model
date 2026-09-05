@@ -1,0 +1,117 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-03T19:59:47Z'
+situation:
+  elapsed_h: 0.35
+  remaining_h: 9.6
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.0667, protocol_n: 150}
+  trigger: "exp-01: the base model writes a correct 'ANSWER: N' line and then keeps generating (41.3% of samples hit the 4000-token cap), so match(location='end') reads a number from the continuation; graded 0.067 while the first ANSWER line is right on 10%."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "non_stop_share, first_answer_line_accuracy"}
+    - {path: /home/ben/task/memory/cards/exp-01.yaml, locator: "result, conclusion"}
+  alternatives_rejected:
+    - {option: "LoRA instead of full fine-tuning", reason: "full FT fits: token-budget batching + liger fused CE runs 12.5k tok/s on the H100, ~38 min for 2 epochs, so there is no reason to give up capacity"}
+    - {option: "Train on MetaMathQA", reason: "its targets carry two answer markers ('The answer is: N' plus gsm8k's '#### N'); OpenMathInstruct-2 needs only \\boxed stripped (pitfall double_answer_format)"}
+    - {option: "Train purely zero-shot", reason: "the grader always prepends a 10-shot system message; 20% of rows carry a 4- or 10-shot prefix so the model is not meeting that context for the first time at eval"}
+    - {option: "Ship greedy decoding defaults in the same run", reason: "it would confound the SFT delta with a decoding change; that is a separate card on top of this checkpoint"}
+  pitfalls_hit:
+    - {what: "fixed batch size 8 OOMed on the 10-shot rows: gemma-3's 262k vocab makes the logits tensor 16.5 GiB", cost_h: 0.15, fix: "token-budget batching (<=32768 padded tokens per micro-batch) plus liger fused linear cross-entropy"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/sft_v1.jsonl, --output-dir, ckpts/smoke, --limit, '192', --epochs, '1'], outcome: "24s, loss 0.48 -> 0.41, ran clean"}
+    - {command: [python, train_sft.py, --data, /tmp/long.jsonl, --output-dir, ckpts/smoke5, --epochs, '1', --token-budget, '28672'], outcome: "12.8k tok/s on the longest (10-shot) rows, no OOM"}
+    - {command: [python, train_sft.py, --data, data/sft_v1.jsonl, --output-dir, /tmp/x, --dry-run], outcome: "CPU dry run: rendered prompt matches the harness byte-for-byte, 0% of rows over max_seq_len, every target ends in <end_of_turn>"}
+problem:
+  statement: "The base model does not stop after the answer: nothing has taught it to emit <end_of_turn>, and it has no habit of producing exactly one chain of thought per prompt. Its first answer line is also right on only 10% of dev items at the harness's sampling settings."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-01_diag.json, locator: "whole file", observation: "non_stop_share 0.413, first_answer_line_accuracy 0.10, graded 0.0667 on dev-150"}
+    - {path: /home/ben/task/logs/2026-09-03T19-48-49+00-00_gsm8k_j87UWbEDgkP3p9RCyANL4m.json, locator: "samples[0].output", observation: "correct 'ANSWER: 20' then the model invents a new problem and answers that; graded answer 10"}
+  affected_share: 0.933
+  failure_examples:
+    - {id: "dev-150 sample 0", source: /home/ben/task/logs/2026-09-03T19-48-49+00-00_gsm8k_j87UWbEDgkP3p9RCyANL4m.json, question: "Amir and Cody cookies", gold: "20", model_output: "... ANSWER: 20, then a newly invented problem answered 55, then repeated garbage to 4000 tokens", failure: "no stop token; the grader reads the last number in the continuation"}
+  watch_set: null
+hypothesis:
+  claim: "Full-parameter SFT of gemma-3-4b-pt on 25.7k GSM8K-style chain-of-thought targets, rendered with the grader's own gemma3.jinja and terminated with <end_of_turn>, raises dev-150 accuracy above the base model's 0.067."
+  mechanism: "Completion-only loss on targets ending in <end_of_turn> teaches the model to stop right after the 'ANSWER: N' line, which alone recovers the gap between 0.10 first-line accuracy and 0.067 graded; training on 405B-generated step-by-step solutions to gsm8k-train problems additionally raises how often that first line is right."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "+40 to +65 points (0.50-0.75 absolute)"
+  falsified_if: "dev-150 accuracy below 0.30, or the non-stop share stays above 0.05 - either would mean the stop token or the render is still wrong rather than the model merely being weak"
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v1.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, shards 0-3 of 32, rows with problem_source in {gsm8k, augmented_gsm8k}; few-shot prefixes drawn from the openai/gsm8k TRAIN split"
+      n_examples: 25715
+      built_by: /home/ben/task/build_data.py
+      build_command: [python, build_data.py, --out, data/sft_v1.jsonl]
+      selection: "integer expected_answer only; \\boxed{} unwrapped and <<..>> calculator spans stripped; the answer string must occur in the solution; 40-2600 chars; at most 2 solutions per unique problem; 14715 gsm8k-source + 11000 augmented_gsm8k; target = solution + blank line + 'ANSWER: <int>'; 10% of rows get a 4-shot and 10% a 10-shot system prefix built exactly like inspect_evals' sample_to_fewshot"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer with liger-kernel 0.8.2 fused linear CE"
+    peft: none
+    hyperparams: {lr: 1.0e-5, epochs: 2, batch_size: 32768, grad_accum: 2, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "prompt rendered with templates/gemma3.jinja (sha256 7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4) and inspect_evals' MATH_PROMPT_TEMPLATE; completion = step-by-step solution, blank line, 'ANSWER: <int>', then <end_of_turn>; loss on the completion only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, data/sft_v1.jsonl, --output-dir, /home/ben/task/ckpts/exp-02, --epochs, '2', --lr, '1e-5', --token-budget, '32768', --max-bs, '48', --grad-accum, '2', --max-seq-len, '2816', --save-steps, '200', --seed, '0']
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 200
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 0.8}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '32']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150 items, no shuffle)"
+    n: 150
+    seed: null
+  comparator:
+    ref: base_model
+    value: 0.0667
+    path: /home/ben/task/eval/base_dev150.json
+  diagnostic:
+    what: "non-stop share (samples whose completion does not end at a stop token); must collapse to ~0 if the eos fix worked"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.63
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-200, step: 200}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-400, step: 400}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-600, step: 600}
+    - {path: /home/ben/task/ckpts/exp-02/checkpoint-662, step: 662}
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 662}
+  training_summary: {final_loss: 0.2656, steps: 662, notes: "2263s wall, 12.5k tokens/s; 28.3M training tokens over 2 epochs; grad_norm stayed 1.5-5, no spikes"}
+  measurements:
+    - {metric: accuracy, value: 0.62, n: 150, path: /home/ben/task/eval/exp-02_final_dev150.json, delta_vs_comparator: 0.5533}
+  diagnostic_result:
+    value: 0.0
+    path: /home/ben/task/analysis/exp-02_final_dev150_diag.json
+    notes: "non_stop_share 0.413 -> 0.000: every sample now terminates at <end_of_turn>. Mean output fell from ~1985 to ~180 tokens. first_answer_line_accuracy 0.10 -> 0.613."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "dev-150 0.0667 -> 0.6200 (+55.3 points). The predicted mechanism is exactly what happened: the stop-token failure went to zero, and first-answer-line accuracy rose from 0.10 to 0.61, so both halves of the hypothesis (stopping and reasoning quality) contributed."
+  decision: adopt
+  next_step: "Two independent follow-ups: ship greedy decoding defaults in generation_config.json, and scale the corpus from 25.7k to 89.6k rows (all 32 OpenMathInstruct-2 shards, 70k unique gsm8k-derived problems)."

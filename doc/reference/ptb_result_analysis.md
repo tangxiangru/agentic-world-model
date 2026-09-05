@@ -16,9 +16,27 @@ uv run awm ptb results experiments/posttrainbench/EXPERIMENT.yaml --task gsm8k
 uv run awm ptb results experiments/posttrainbench/EXPERIMENT.yaml --cell g02 --json
 ```
 
-The default prints only validated completed cells. `--all` additionally prints the latest
-incomplete attempt and its missing evidence. If a cell has several attempts, the report keeps the
-latest validated completion for analysis while separately retaining the latest attempt.
+The default prints validated completed cells, including any result that is visibly marked
+`QUARANTINED`. `--all` additionally prints the latest incomplete attempt and its missing evidence.
+If a cell has several attempts, the report prefers the latest eligible completion for analysis
+while separately retaining the latest attempt.
+
+Coverage and accuracy summaries include only `run_purpose: formal` or `formal-retry*` attempts.
+Pilot and context-smoke results remain discoverable as attempts but never enter a formal manifest's
+coverage, primary, or sensitivity aggregates because their budget or purpose differs.
+
+Completion and eligibility are separate. A result can pass the canonical PTB validator and keep
+its score while being quarantined because runtime placement differs from the frozen receipt. Such
+a result is evidence, but it is excluded from `eligible`, `clean`, and `flagged` aggregates until
+the site owner decides the placement difference is immaterial. Its `status.json` preserves
+`complete: true`, sets `eligible: false` and `quarantined: true`, and records the placement fact in
+`quarantine_reasons`; validator defects remain in `issues` and make `complete: false`.
+
+The report prints two accuracy summaries per manifest (one manifest is one protocol variant):
+`primary` uses eligible strict-site completions; `placement-sensitivity` adds only complete results
+whose sole quarantine reason is frozen-node placement. Both show `n`, mean, and range. Never use
+the sensitivity number as the promotion result: if the primary and sensitivity conclusions differ,
+the round is inconclusive and needs strict-site repeats.
 
 ## Resolve one job or cell
 
@@ -30,6 +48,23 @@ This joins live/history Slurm identity to the receipt, cell configuration, manif
 commits, result directory, accuracy, completion verdict, and judge flags. The receipt is the
 job-to-cell authority; the manifest defines the configuration; the spec explains why the cell
 exists.
+
+Task identity for completion checks comes from that manifest/frozen receipt,
+not the result's self-reported `experiment.task`. Discovery, receipt audits,
+queue explanations/failure resolution, and automatic/manual harvest pass the
+independent task to the validator. Missing or conflicting receipt identity keeps
+harvested material but cannot establish `complete`/`eligible`.
+
+For an explicit directory diagnostic, supply the independently known task:
+
+```bash
+uv run awm ptb audit /PATH/TO/RESULT --expected-task gsm8k
+```
+
+An unscoped directory check reports missing identity rather than proving
+completion. Existing GSM8K/AIME PTB validators keep their original interface;
+HumanEval and GPQA require the strict task-aware interface and never fall back to
+numeric-only validation after a rejection. This is not new-task launch admission.
 
 ## Inspect result evidence
 
@@ -51,8 +86,10 @@ model/API, and PTB lookup flags are stronger validity failures.
 
 ## Analysis order
 
-1. Establish coverage: complete cells / intended cells and which cells remain incomplete.
-2. Separate clean completed results from judge-flagged completed results.
+1. Establish coverage: complete cells / intended cells, eligible completions, quarantined
+   completions, and which cells remain incomplete.
+2. Separate clean completed results from judge-flagged completed results; never put quarantined
+   scores into either aggregate by default.
 3. Compare scores only within the same benchmark and official evaluation contract.
 4. For AIME, report both `correct/30` and accuracy; a one-question change is 3.33 points.
 5. Use matched model/profile/context contrasts before interpreting isolated score maxima.

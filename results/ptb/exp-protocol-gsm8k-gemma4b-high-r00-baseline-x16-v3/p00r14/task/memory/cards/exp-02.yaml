@@ -1,0 +1,119 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-02
+created_at: '2026-09-02T22:24:20Z'
+situation:
+  elapsed_h: 0.5
+  remaining_h: 9.5
+  incumbent:
+    ref: base_model
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    score: {metric: accuracy, value: 0.06, protocol_n: 150}
+  trigger: 'exp-01 measured the base model at 0.06 on dev-150; the eval log shows a median completion of 6530 characters and 75 of 150 completions still generating after the last ANSWER line - the checkpoint does not close a turn.'
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-01_base_dev150.json, locator: 'accuracy'}
+    - {path: /home/ben/task/analysis/base_probe250.json, locator: 'samples[].outputs'}
+  alternatives_rejected:
+    - {option: 'LoRA instead of full fine-tuning', reason: 'the model has no turn-taking or answer-format prior at all; that is a change of output distribution, which full FT does more reliably, and 4B fits in 80GB with an 8-bit optimizer'}
+    - {option: 'MetaMathQA as the augmentation source', reason: 'its GSM bodies keep gsm8k''s own "#### N" line alongside a boxed answer - pitfall double_answer_format; OpenMathInstruct-2 carries a separate expected_answer field that reformats cleanly'}
+    - {option: 'Train on the full 153k OpenMathInstruct-2 GSM subset', reason: 'at the measured 16.8 rows/s that is ~2.5 h for one epoch; 92k rows leaves budget for a rejection-sampling round, the larger expected win'}
+    - {option: 'Put the 10-shot system prefix on every row', reason: 'the prefix is 2175 tokens against a 131-token zero-shot prompt, ~5x compute for the same loss tokens; 5% of rows carry it for robustness instead'}
+  pitfalls_hit:
+    - {what: 'OOM in Gemma3 forward at logits.float(): batch 16 x 2717 tokens x 262144 vocab needs 42 GiB of fp32 logits', cost_h: 0.1, fix: 'replaced fixed-row batching with a token-budget batch sampler (8192 padded tokens/batch)'}
+    - {what: 'vLLM exited 1 loading the smoke checkpoint: Trainer.save_model does not copy preprocessor_config.json/processor_config.json, which vLLM reads to build the multimodal budget even for text-only prompts', cost_h: 0.15, fix: 'save_loadable() copies both from the base snapshot after every save (pitfall final_model_not_loadable)'}
+  smoke_runs:
+    - {command: [python, scripts/train_sft.py, --data, data/sft_v1.jsonl, --out, /tmp/smoke1, --limit, '3000', --epochs, '1'], outcome: '44 steps in 178 s, loss 0.49 -> 0.42, 16.8 rows/s; that checkpoint scored 0.26 on evaluate.py --limit 50, so the format and template plumbing are right'}
+    - {command: [python, scripts/probe.py, --model, /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d, --out, analysis/base_probe250.json], outcome: 'base model 0.028 on 250 held-out GSM8K train items; 250 prompts in 30 s, cheap enough to run every card'}
+problem:
+  statement: 'The base checkpoint does not terminate its turn. It imitates the "ANSWER: N" shape from the 10-shot prefix but keeps generating - restating the prompt, or collapsing into a repeated token - so match(location=end, numeric=True) reads the last number of a run-on instead of the answer. Arithmetic quality is not yet the binding constraint.'
+  evidence:
+    - {path: /home/ben/task/logs/2026-09-02T22-06-04+00-00_gsm8k_fevqYTfdKK7ZsN856raWLA.json, locator: 'samples[].output.choices[0].message.content', observation: 'median completion 6530 chars, max 26804; 129/150 contain "ANSWER:" but only 9/150 score correct'}
+    - {path: /home/ben/task/analysis/base_probe250.json, locator: 'samples[].outputs', observation: '243/250 held-out train items wrong under greedy decoding; failures are degenerate repetition, not wrong arithmetic'}
+  affected_share: 0.94
+  failure_examples:
+    - {id: train-26, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'Jack is stranded on a desert island. He wants some salt to season his fish. He collects 2 liters of seawater in an old bucket. If the water is 20% salt, how many ml of salt will Jack get when all the water evaporates?', gold: '400', model_output: '2744 chars ending in "CDCl\nCDCl\nCDCl" repeated', failure: 'degenerate repetition; never emits <end_of_turn>'}
+    - {id: train-27, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'Brennan was researching his school project and had to download files from the internet to his computer to use for reference.', gold: '400', model_output: '2730 chars ending in repeated "CDCl"', failure: 'degenerate repetition'}
+    - {id: train-28, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'There are 5 houses on a street, and each of the first four houses has 3 gnomes in the garden. If there are a total of 20 gnomes on the street, how many gnomes does the fifth house have?', gold: '8', model_output: '2769 chars ending in repeated "CDCl"', failure: 'degenerate repetition'}
+    - {id: train-54, source: /home/ben/task/data/dev_heldout250.jsonl, question: 'Leah earned $28 working odd jobs around the neighborhood. She spent a seventh of it on a milkshake and put half of the rest in her savings account.', gold: '11', model_output: '2908 chars ending in repeated "CDCl"', failure: 'degenerate repetition'}
+  watch_set:
+    path: /home/ben/task/analysis/base_watch250.jsonl
+    n: 243
+    selection: 'every held-out GSM8K train item the base model gets wrong under greedy decoding (243 of 250)'
+hypothesis:
+  claim: 'Completion-only SFT on 92k GSM8K-train-derived solutions, each rendered with the grader''s own chat template and ending in "ANSWER: <int>" followed by <end_of_turn>, raises dev-150 accuracy above the base model''s 0.06.'
+  mechanism: 'Two deficits are addressed at once: the target teaches the model to stop at <end_of_turn> so the scorer reads the intended number, and 92k worked grade-school solutions supply step-by-step arithmetic competence a -pt checkpoint has never been asked to produce on demand.'
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: '+40 to +60 pts on dev-150; a 3k-row smoke run already reached 0.26 on --limit 50'
+  falsified_if: 'dev-150 accuracy below 0.40, or fewer than 150 of the 243 watch items fixed - either would mean the format fix alone was the whole effect and the augmentation data added nothing.'
+setup:
+  parent_checkpoint:
+    path: /home/ben/hf_cache/hub/models--google--gemma-3-4b-pt/snapshots/cc012e0a6d0787b4adcc0fa2c4da74402494554d
+    origin: base_model
+    hash: cc012e0a6d0787b4adcc0fa2c4da74402494554d
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: 'openai/gsm8k@740312add88f781978c0658806c59bc2815b9866 train split + nvidia/OpenMathInstruct-2 train_1M rows with problem_source in {gsm8k, augmented_gsm8k} (augmentations of the GSM8K train split)'
+      n_examples: 92435
+      built_by: /home/ben/task/scripts/build_sft_data.py
+      build_command: [python, scripts/build_sft_data.py, --omi-max, '120000', --omi-cap-per-problem, '1', --gsm-repeat, '3', --out, data/sft_v2.jsonl]
+      selection: '250 GSM8K train items held out for probing; calculator annotations stripped; boxed answers unwrapped; trailing "the answer is ..." sentences dropped; targets already carrying an ANSWER marker rejected; expected_answer must be an integer; OpenMathInstruct deduped to one solution per problem (70766 unique); GSM8K train repeated 3x (7223 x 3)'
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: 'transformers 4.57.3 Trainer with a custom token-budget batch sampler'
+    peft: 'none (full fine-tune of the language model; vision_tower and multi_modal_projector frozen)'
+    hyperparams: {lr: 1.0e-5, epochs: 1, batch_size: 8192, grad_accum: 4, max_seq_len: 2816, scheduler: cosine, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: 'step-by-step reasoning, blank line, "ANSWER: <int>", then <end_of_turn>. The prompt is tokenizer.apply_chat_template with templates/gemma3.jinja and inspect_evals'' MATH_PROMPT_TEMPLATE, both read from the grader''s own files; 5% of rows additionally carry the exact 10-shot system message the grader sends.'
+    stop_token: '<end_of_turn>'
+    answer_marker: 'ANSWER: '
+  command:
+    argv: [python, scripts/train_sft.py, --data, data/sft_v2.jsonl, --out, /home/ben/task/ckpts/exp-02, --lr, '1e-5', --epochs, '1', --max-seq-len, '2816', --fewshot-frac, '0.05', --token-budget, '8192', --grad-accum, '4', --save-steps, '400']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-02.log
+  output_dir: /home/ben/task/ckpts/exp-02
+  checkpoints:
+    every_steps: 400
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: 'official --limit 150 (first 150 of openai/gsm8k test via inspect_evals/gsm8k, fewshot=10 seed=42)'
+    n: 150
+    seed: 42
+  comparator:
+    ref: base_model
+    value: 0.06
+    path: /home/ben/task/eval/exp-01_base_dev150.json
+  diagnostic:
+    what: 'accuracy on the 250 held-out GSM8K train items (scripts/probe.py, greedy, same template and 10-shot system message)'
+    n: 250
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.36
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final, step: 1261}
+  training_summary: {final_loss: 0.337, steps: 1261, notes: 'train_loss 0.358 over the epoch; 18.9 rows/s; intermediate checkpoint-400/1200/1261 deleted after the final save (setup promised keep: last)'}
+  measurements:
+    - {metric: accuracy, value: 0.46, n: 150, path: /home/ben/task/eval/exp-02_dev150.json, delta_vs_comparator: 0.40}
+  diagnostic_result:
+    value: 0.716
+    path: /home/ben/task/analysis/exp-02_probe250.json
+    notes: 'greedy probe on the 250 held-out GSM8K train items: 0.028 -> 0.716. The 25-point gap to the 0.46 dev-150 number is the decode path, not the items: evaluate.py sends only max_tokens, so vLLM falls back to the checkpoint generation_config (do_sample true, top_k 64, top_p 0.95, temperature 1.0) while the probe decodes greedily.'
+  watch_set_result: {fixed: 175, still_failing: 68, regressions: 3, path: /home/ben/task/analysis/exp-02_watch_rerun.json}
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: 'dev-150 0.06 -> 0.46 (+40), and the format failure is gone entirely: analysis/exp-02_dev150_tags.json tags all 150 completions as terminating with exactly one answer marker, median 296 chars against the base model''s 6530, and all 81 failures are wrong_number. 175 of 243 watch items fixed, 3 regressions.'
+  decision: adopt
+  next_step: 'The remaining failures are reasoning/arithmetic, plus a decode-path gap: the same weights score 0.716 greedy on held-out train items and 0.46 sampled on dev-150. exp-03 tests writing temperature 0 into generation_config.json, which is the only key vLLM reads to switch off sampling.'

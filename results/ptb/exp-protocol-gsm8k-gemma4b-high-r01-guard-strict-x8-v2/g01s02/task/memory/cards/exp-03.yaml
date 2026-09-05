@@ -1,0 +1,108 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-03
+created_at: '2026-09-03T12:10:00Z'
+situation:
+  elapsed_h: 2.2
+  remaining_h: 7.8
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.62, protocol_n: 150}
+  trigger: "Reading the harness end to end: evaluate.py passes no temperature, inspect_ai's vllm provider omits sampling params it has no value for, and vllm 0.11's ModelConfig.get_diff_sampling_param() then adopts the checkpoint's generation_config.json as the server default. exp-02's saved generation_config carries gemma's pretraining defaults (do_sample true, top_k 64, top_p 0.95, temperature unset -> 1.0), so every graded answer so far was a temperature-1.0 sample, not the model's best guess."
+  trigger_evidence:
+    - {path: /home/ben/task/ckpts/exp-02/final/generation_config.json, locator: "do_sample true, top_k 64, top_p 0.95"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/config/model.py, locator: "get_diff_sampling_param, available_params includes temperature/top_k/top_p"}
+    - {path: /usr/local/lib/python3.10/dist-packages/vllm/entrypoints/openai/serving_chat.py, locator: "lines 134-150: default_sampling_params = model_config.get_diff_sampling_param()"}
+  alternatives_rejected:
+    - {option: "Leave the decode config alone and spend the slot on more training", reason: "one eval (about 5 minutes) tests a change that applies to every later checkpoint too; if greedy wins, every subsequent measurement should be taken under it"}
+    - {option: "Edit evaluate.py to force greedy", reason: "forbidden by the task rules; generation_config.json is part of the model artifact, which is mine to set"}
+    - {option: "Self-consistency / majority vote over k samples", reason: "the harness scores exactly one completion per item; there is no place to aggregate"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "GSM8K is scored on a single completion per item. Sampling at temperature 1.0 with top_p 0.95 injects variance into a task where the model's argmax path is the best single guess, so some items are lost purely to sampling noise rather than to a reasoning failure."
+  evidence:
+    - {path: /home/ben/task/eval/exp-02_final_dev150_full.json, locator: "samples with score I", observation: "57 of 150 items wrong under temperature-1.0 sampling; failures such as gsm8k_18abb77f ('30 / 4 = 7.5' after dropping a term) look like single-token derailments rather than a missing capability"}
+    - {path: /home/ben/task/analysis/exp-02_diag.json, locator: "ends_with_answer=1.0", observation: "format is no longer a source of loss, so the remaining gap is reasoning plus decode noise"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Setting temperature 0 (greedy) in the checkpoint's generation_config.json, changing nothing else, will raise dev-150 accuracy relative to the same weights decoded with gemma's stochastic defaults."
+  mechanism: "For a single-sample benchmark the argmax continuation is the mode of the model's distribution; sampling at T=1 with top_p 0.95 sometimes selects a lower-probability token mid-derivation, and one wrong token in an arithmetic chain propagates to a wrong final number."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points"
+  falsified_if: "greedy scores at or below exp-02's 0.62 on the same 150 items, i.e. the delta is not positive"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_v2.jsonl
+      source: "unchanged from exp-02 - this card trains nothing"
+      n_examples: 69282
+      built_by: /home/ben/task/scripts/build_data.py
+      build_command: [python3, scripts/build_data.py, --out, data/sft_v1.jsonl]
+      selection: "no new data; the intervention is a decode-config change only"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: decode-config
+    framework: vllm 0.11.0 default sampling params from generation_config.json
+    peft: none
+    hyperparams: {temperature: 0.0, seed: 0}
+    target_format: "unchanged"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python3, scripts/make_variant.py, --src, ckpts/exp-02/final, --dst, ckpts/exp-02/final_greedy, --gen-config, '{"temperature":0.0,"top_k":null,"top_p":null,"do_sample":false}']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/make_variant.py
+    env: {}
+    log: /home/ben/task/logs/exp-03.log
+  output_dir: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.15}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: "official inspect_evals/gsm8k test split --limit 150 (first 150, no shuffle)"
+    n: 150
+    seed: 42
+  comparator:
+    ref: exp-02
+    value: 0.62
+    path: /home/ben/task/eval/exp-02_final_dev150.json
+  diagnostic:
+    what: "mean completion length under greedy vs sampling - a greedy model that starts looping would show a large increase"
+    n: 150
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.09
+  output_checkpoint: /home/ben/task/ckpts/exp-02/final_greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-02/final_greedy, step: 1092}
+  training_summary: {final_loss: null, steps: null, notes: "no training; final_greedy symlinks exp-02/final's weights and tokenizer and overwrites generation_config.json with temperature 0.0, do_sample false, top_k/top_p removed"}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-03_greedy_dev150.json, delta_vs_comparator: 0.10}
+  diagnostic_result:
+    value: 540.9
+    path: /home/ben/task/analysis/exp-03_diag.json
+    notes: "mean completion 507 chars sampled -> 541 greedy: no degeneration or looping. Item-level: greedy fixes 23 items the sampled run got wrong and loses 8 it got right, net +15 of 150."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Identical weights, dev-150 0.620 -> 0.720 (+10.0 pts) from setting temperature 0 in generation_config.json. 23 items fixed against 8 lost, so this is the sampling noise the mechanism predicted, not a length or format artefact."
+  decision: adopt
+  next_step: "Every later measurement is taken with a greedy generation_config, and the shipped final_model must carry one. Continue to the rejection-sampling line for the reasoning errors that remain."

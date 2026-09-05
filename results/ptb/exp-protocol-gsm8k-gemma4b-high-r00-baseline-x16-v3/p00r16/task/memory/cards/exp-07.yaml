@@ -1,0 +1,121 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-03T12:55:00Z'
+situation:
+  elapsed_h: 5.2
+  remaining_h: 4.8
+  incumbent:
+    ref: exp-06
+    path: /home/ben/task/ckpts/exp-06/greedy
+    score: {metric: accuracy, value: 0.4733, protocol_n: 150}
+  trigger: "The same exp-06 weights, greedy, score 0.4867 on probe300 with the harness's 10-shot system message and 0.7033 without it. Every model in this session has been trained on the zero-shot prompt only, and the harness always prepends 10 demonstrations - so the whole session has been measuring a 21.7-point prompt mismatch, not a reasoning ceiling."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-06_probe300_nofs.json, locator: "summary.accuracy=0.7033, fewshot=false; 299/300 clean answer lines, 1/300 unterminated", observation: "zero-shot the model is nearly perfect on format and 21.7 pts more accurate"}
+    - {path: /home/ben/task/eval/exp-06_probe300.json, locator: "summary.accuracy=0.4867, fewshot=true; 244/300 clean, 11/300 unterminated", observation: "same weights, same decoding, only the 10-shot system message added"}
+    - {path: /home/ben/task/analysis/exp-06_continuation.json, locator: "continuation_failures=53 of 300, 49 of them scored wrong", observation: "the failure has one shape: the model emits a correct 'ANSWER: N' line and then starts a NEW fabricated problem, imitating the demo blocks. match(numeric=True, location='end') reads the last number in the completion, so the fabricated problem's numbers get graded instead of the answer."}
+  alternatives_rejected:
+    - {option: "Add a stop sequence at eval time", reason: "the harness sends no stop_seqs and vLLM's generation_config only exposes repetition_penalty/temperature/top_k/top_p/min_p/max_new_tokens - there is no way to inject a stop string from the checkpoint side"}
+    - {option: "Accept it and spend the remaining budget on more reasoning data", reason: "39% of the few-shot failures (49 continuations + 11 non-terminations of 154) are this one behaviour; no amount of extra reasoning data touches it"}
+    - {option: "Train on the exact 10-shot prefix for every row", reason: "2044 extra prompt tokens on every row is ~7x the compute per row; at 65% of rows it costs ~70 min, which the budget has, while 100% would not leave time to evaluate"}
+    - {option: "Retrain from base with the few-shot prefix mixed in", reason: "~2.5h; exp-06 already has the reasoning and the discipline, and this is a narrow behavioural repair that should not need a fresh run"}
+  pitfalls_hit:
+    - {what: "measured the model only in the condition it was trained in (zero-shot probe) for five hours; the harness's prompt is 10-shot and the gap is 21.7 pts. The probe was run with fewshot=True from exp-02 onward, but until now no zero-shot probe existed to compare against, so the mismatch was invisible", cost_h: 0.0, fix: "always probe both conditions; the deployment condition is the one the grader uses"}
+  smoke_runs: []
+problem:
+  statement: "With the harness's 10-shot system message in context, the model finishes its answer and then continues the demonstration pattern by inventing a new problem. Because the scorer reads the last number in the completion, a correct answer followed by a fabricated problem is scored as wrong. 53 of 300 probe completions do this; 49 of them are graded wrong."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-06_continuation.json, locator: "continuation_failures=53, wrong=154", observation: "32% of all few-shot failures are answer-then-continue; a further 11 never terminate at all"}
+    - {path: /home/ben/task/eval/exp-06_probe300.json, locator: "id train-6980 and train-6988", observation: "both emit the correct 'ANSWER: 22' / 'ANSWER: 20' and then start 'Solve the following math problem step by step...' with a new invented question"}
+    - {path: /home/ben/task/eval/exp-06_probe300_nofs.json, locator: "summary.accuracy=0.7033", observation: "without the demos the same weights answer 211/300 correctly and 299/300 stop cleanly, so the reasoning is there"}
+  affected_share: 0.39
+  failure_examples:
+    - {id: train-6980, source: /home/ben/task/data/probe300.jsonl, question: "Bill has 50 donuts; he eats 2, the secretary takes 4, coworkers steal half of the rest...", gold: "22", model_output: "...44 / 2 = 22 donuts left.\n\nANSWER: 22\n\nSolve the following math problem step by step... There are 100 students in the school... How many boys are in the school?\n\nReasoning:", failure: "correct answer, then a fabricated new problem; the scorer reads 60 from the invented question"}
+    - {id: train-6988, source: /home/ben/task/data/probe300.jsonl, question: "Brandy drinks 4 energy drinks of 120 mg caffeine each, limit 500 mg...", gold: "20", model_output: "...500 - 480 = 20\n\nANSWER: 20\n\nSolve the following math problem step by step... If a 10-year-old child weighs 40 pounds, how many pounds will he weigh when he turns 12?\n\nReasoning:", failure: "same shape: correct answer then a fabricated problem"}
+    - {id: train-6983, source: /home/ben/task/data/probe300.jsonl, question: "Ferris wheel holds 70 people per 20 minutes, open 1:00pm-7:00pm...", gold: "1260", model_output: "6 hours = 6 x 20 = 120 minutes ... 6 x 70 = 420\n\nANSWER: 420", failure: "a genuine reasoning error (hours to minutes), right without the demos - included so the watch set is not all one failure type"}
+  watch_set:
+    path: /home/ben/task/data/probe300.jsonl
+    n: 300
+    selection: "first 300 of the last 500 GSM8K *train* items (indices 6973-7272), held out from every training file. Not the benchmark test set."
+hypothesis:
+  claim: "Continuing exp-06's training on its own RFT data with the harness's exact 10-shot system message present in 65% of rows raises greedy probe300 accuracy *in the few-shot condition* above exp-06's 0.4867, and cuts answer-then-continue completions below 53/300."
+  mechanism: "The continuation is a learned prior the model has never seen contradicted: it has only ever been supervised on single-turn zero-shot rows, so with ten Q/A blocks in context the highest-likelihood continuation after one answer is another Q/A block. Putting the same demo block in the prompt and keeping the target a single answer terminated by <end_of_turn> supervises exactly that decision - the demos are context, not a pattern to extend. Nothing about the reasoning changes, so the zero-shot ceiling of 0.7033 is what the few-shot condition should move toward."
+  falsified_if: "few-shot greedy probe300 accuracy is at or below exp-06's 0.4867, or answer-then-continue completions are not fewer than 53/300"
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-06
+    magnitude: "+10 to +20 pts in the few-shot condition"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-06/final
+    origin: exp-06
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_rft22k.jsonl
+      source: "derived:exp-06 - a 22000-row shuffle-subsample of data/sft_rft.jsonl (exp-04's own correct, terminated samples plus the original gsm8k train rows). Questions are gsm8k train and OpenMathInstruct-2 gsm8k/augmented_gsm8k only."
+      n_examples: 22000
+      built_by: /home/ben/task/scripts/rft_sample.py
+      build_command: [python, -c, "shuffle(seed=7) data/sft_rft.jsonl and keep the first 22000 rows"]
+      selection: "same filters as exp-06 (terminated, exactly one answer marker, graded correct, 2 shortest per question), subsampled to fit the 65%-few-shot token cost in the remaining budget"
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, completion-only loss, token-budget micro-batches (scripts/train_sft3.py --fewshot-frac)"
+    peft: "none (full fine-tune; vision_tower and multi_modal_projector frozen)"
+    hyperparams: {lr: 7.0e-06, epochs: 1, batch_size: 12288, grad_accum: 3, max_seq_len: 3072, scheduler: cosine_with_min_lr_0.1, warmup: 0.03, weight_decay: 0.0, precision: bf16, seed: 0}
+    target_format: "65% of rows are rendered with the harness's exact 10-shot system message (prompt_utils.fewshot_system_message(), the same hf_dataset(shuffle=True, seed=42, limit=10) draw inspect_evals uses, from the gsm8k TRAIN split) folded into the first user turn by templates/gemma3.jinja; 35% stay zero-shot. The target is unchanged in both: chain of thought, blank line, 'ANSWER: <number>', then <end_of_turn>. Prompt tokens carry no loss."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, scripts/train_sft3.py, --model, /home/ben/task/ckpts/exp-06/final, --data, data/sft_rft22k.jsonl, --out, /home/ben/task/ckpts/exp-07, --lr, '7e-6', --epochs, '1', --fewshot-frac, '0.65', --max-tokens-per-batch, '12288', --max-rows-per-batch, '64', --grad-accum, '3', --max-seq-len, '3072', --warmup, '0.03', --save-steps, '250']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft3.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: 'expandable_segments:True'}
+    log: /home/ben/task/logs/exp-07.log
+  output_dir: /home/ben/task/ckpts/exp-07
+  checkpoints:
+    every_steps: 250
+    keep: 3
+  budget:
+    gpu: H100-80GB
+    planned_h: 1.3
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '150', --json-output-file, '{out}']
+    dev_set: "official --limit 150"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-06
+    value: 0.4733
+    path: /home/ben/task/eval/exp-06_dev150.json
+  diagnostic:
+    what: "greedy probe300 accuracy WITH the 10-shot system message (exp-06: 0.4867), the answer-then-continue count (exp-06: 53/300), and the zero-shot probe300 accuracy as a check that the repair did not cost reasoning (exp-06: 0.7033)"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.11
+  output_checkpoint: /home/ben/task/ckpts/exp-07/greedy
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-07/final, step: 1066}
+    - {path: /home/ben/task/ckpts/exp-07/greedy, step: 1066}
+  training_summary: {final_loss: 0.2373, steps: 1066, notes: "3996s wall, 5.5 samples/s - a seventh of exp-06's rate, which is the cost of the 2044-token demo prefix on 65% of rows. Row token length p50 2287, max 2758."}
+  measurements:
+    - {metric: accuracy, value: 0.72, n: 150, path: /home/ben/task/eval/exp-07_dev150.json, delta_vs_comparator: 0.2467}
+  diagnostic_result:
+    value: 0.74
+    path: /home/ben/task/eval/exp-07_probe300.json
+    notes: "few-shot greedy probe300 0.4867 -> 0.7400 (+25.3). answer-then-continue completions 53/300 -> 0/300; unterminated 11/300 -> 2/300; clean answer lines 244/300 -> 298/300. On the official 150 the format is now exact: 150/150 clean answer lines, 0 unterminated, 0 continuations. Zero-shot probe300 0.7033 -> 0.6833, so ~2 pts of zero-shot ability was traded for 25 pts in the condition the grader actually uses - and the few-shot condition is now the better of the two (0.7400 vs 0.6833), i.e. the demonstrations finally help instead of hurting."
+  watch_set_result: {fixed: 90, still_failing: 64, regressions: 14, path: /home/ben/task/analysis/exp-07_watch.json}
+  failure: null
+
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "Putting the harness's own 10-shot demo block in 65% of training prompts takes the official protocol from 0.4733 to 0.7200 (+24.7) and the few-shot probe from 0.4867 to 0.7400 (+25.3). The predicted mechanism is confirmed exactly: answer-then-continue went 53/300 to 0/300 and non-termination 11/300 to 2/300, because the model has now been shown that the demonstrations are context to condition on rather than a pattern to extend."
+  decision: adopt
+  next_step: "This checkpoint is final_model (weights = ckpts/exp-07/final, generation_config.json set to greedy). Remaining budget goes to a larger-n confirmation (--limit 500) rather than another training round: at 0.72 on n=150 the standard error is 3.7 pts, which is wider than any effect a further hour of training would plausibly add."

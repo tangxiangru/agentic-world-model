@@ -1,0 +1,109 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-06
+created_at: '2026-09-02T20:05:00Z'
+situation:
+  elapsed_h: 5.85
+  remaining_h: 4.15
+  incumbent:
+    ref: exp-04
+    path: /home/ben/task/ckpts/exp-04/final
+    score: {metric: accuracy, value: 0.6202, protocol_n: 1319}
+  trigger: "exp-05's full-test ranking put exp-04 at 0.6202 and exp-02 at 0.5861, reversing the n=200 verdict: the RFT union data does work. Every run so far has been exactly one epoch, and the optimization axis (how long the model trains on the winning mixture) has never been tested."
+  trigger_evidence:
+    - {path: /home/ben/task/eval/exp-04_full1319.json, locator: "accuracy=0.6202, stderr=0.0134"}
+    - {path: /home/ben/task/eval/exp-02_full1319.json, locator: "accuracy=0.5861, stderr=0.0136"}
+    - {path: /home/ben/task/memory/cards/exp-05.yaml, locator: "conclusion"}
+  alternatives_rejected:
+    - {option: "A second RFT round: resample from exp-04, rebuild, retrain from base", reason: "40 min of sampling plus 1.6h of training is 2.4h of a 4.15h budget and leaves no room to evaluate or fall back; the epoch axis is cheaper and untested"}
+    - {option: "Retrain from base for 2 epochs on the union", reason: "3.1h, does not fit with evaluation and final assembly inside the remaining budget"}
+    - {option: "Model soup of exp-02/exp-03/exp-04", reason: "cheap, but two of the three ingredients are 3.4 points behind the third on the full test set, so the average is unlikely to beat exp-04. Kept as a fallback if this run regresses and time remains"}
+    - {option: "Train prefix-matched rows to recover the 10-shot penalty", reason: "exp-05 measured that penalty at only ~1.8 points and inside noise, and the grader's 10-shot block costs ~1700 tokens per row, which would roughly double epoch time for the smallest measured effect on the table"}
+  pitfalls_hit:
+    - {what: "The n=200 dev protocol reversed the true ranking of exp-02 and exp-04 (-1.5 measured, +3.4 actual), which nearly caused a correct method to be abandoned as 'contradicted'", cost_h: 0.0, fix: "all scoring in this card is at n=1319; n=200 is retired"}
+  smoke_runs: []
+problem:
+  statement: "The winning mixture (116k rows: 66k off-policy OpenMathInstruct-2/GSM8K plus 50k of exp-02's own verified-correct samples) has only ever been trained for a single epoch with a cosine schedule annealed to zero, reaching train_loss 0.293. Whether the model has extracted what that mixture contains is unknown, and one epoch is fewer than the 2-4 typical of published GSM8K SFT recipes at this scale."
+  evidence:
+    - {path: /home/ben/task/logs/exp-04_train.log, locator: "final line", observation: "train_loss 0.2930 after exactly 1 epoch / 3640 steps, lr annealed to ~0"}
+    - {path: /home/ben/task/eval/exp-04_full1319.json, locator: "accuracy=0.6202", observation: "the one-epoch score on the mixture that is now known to be best"}
+    - {path: /home/ben/task/analysis/exp-04_final_format.json, locator: "format_rate=0.99, n_wrong=82", observation: "no format headroom left; any gain must come from the reasoning term"}
+  affected_share: null
+  failure_examples:
+    - {id: dev200-wrong-0, source: /home/ben/task/analysis/exp-04_final_format.json, question: "dev-200 item, wrong under exp-04", gold: "see analysis file wrong[0]", model_output: "see analysis file wrong[0]", failure: "arithmetic/set-up error inside a well-formed answer"}
+    - {id: dev200-wrong-1, source: /home/ben/task/analysis/exp-04_final_format.json, question: "dev-200 item, wrong under exp-04", gold: "see analysis file wrong[1]", model_output: "see analysis file wrong[1]", failure: "arithmetic/set-up error inside a well-formed answer"}
+    - {id: dev200-wrong-2, source: /home/ben/task/analysis/exp-04_final_format.json, question: "dev-200 item, wrong under exp-04", gold: "see analysis file wrong[2]", model_output: "see analysis file wrong[2]", failure: "arithmetic/set-up error inside a well-formed answer"}
+  watch_set: null
+hypothesis:
+  claim: "A second epoch over the same 116k union, continued from exp-04/final with a fresh cosine cycle at half the learning rate (5e-6), will raise full-test accuracy above exp-04's 0.6202."
+  mechanism: "One epoch at 1e-5 leaves a 4B model short of the mixture's information: the RFT half in particular contains up to four distinct correct chains per question, and a single pass weights each of them once. A second, lower-lr pass sharpens the paths that are already correct without the instability of a higher lr, which is the same mechanism that makes 2-4 epochs standard in published GSM8K SFT recipes."
+  expected_effect: {metric: accuracy, direction: higher, against: exp-04, magnitude: "+1 to +4 points on the full 1319-item test set"}
+  falsified_if: "Full-test accuracy is at or below exp-04's 0.6202, i.e. the second pass overfits or is neutral; exp-04/final then stays as final_model."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-04/final
+    origin: exp-04
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/sft_rft_exp04.jsonl
+      source: "derived:exp-04 (identical file to exp-04: hf:openai/gsm8k train + hf:nvidia/OpenMathInstruct-2 train_1M gsm8k rows + 50,178 rejection-sampled rows from ckpts/exp-02/final)"
+      n_examples: 116651
+      built_by: /home/ben/task/scripts/gen_rft.py
+      build_command: [python, scripts/gen_rft.py, --model, ckpts/exp-02/final, --out, data/rft_exp04.jsonl, --k, "8", --n-aug, "8000", --temperature, "1.0", --max-per-question, "4"]
+      selection: "unchanged from exp-04; only the shuffle seed differs (1 instead of 0) so the second pass sees a different order. The GSM8K test split is never read."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, completion-only loss mask (same script as exp-02/03/04)"
+    peft: "none (full fine-tune of the 3.88B language tower; SigLIP vision tower and multimodal projector frozen)"
+    hyperparams: {lr: 5.0e-6, epochs: 1, batch_size: 8, grad_accum: 4, max_seq_len: 1280, scheduler: cosine, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 1}
+    target_format: "identical to exp-02/03/04: prompt rendered by templates/gemma3.jinja with add_generation_prompt=True; target = reasoning + a final 'ANSWER: <int>' line + '<end_of_turn>'; loss on target tokens only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER:"
+  command:
+    argv: [python, scripts/train_sft.py, --model, ckpts/exp-04/final, --data, data/sft_rft_exp04.jsonl, --out, ckpts/exp-06, --lr, "5e-6", --epochs, "1", --bs, "8", --accum, "4", --max-seq-len, "1280", --warmup, "0.02", --seed, "1", --save-steps, "1820"]
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-06_train.log
+  output_dir: /home/ben/task/ckpts/exp-06
+  checkpoints:
+    every_steps: 1820
+    keep: all
+  budget: {gpu: H100-80GB, planned_h: 1.6}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "1319", --max-connections, "32", --max-tokens, "1024", --gpu-memory-utilization, "0.6"]
+    dev_set: "official inspect_evals/gsm8k test split, all 1319 items"
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-04
+    value: 0.6202
+    path: /home/ben/task/eval/exp-04_full1319.json
+  diagnostic:
+    what: "format-compliance rate and wrong-answer count from scripts/format_diag.py on the full-test log, to confirm a second epoch did not degrade stopping behaviour"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 1.52
+  output_checkpoint: /home/ben/task/ckpts/exp-06/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-1820, step: 1820}
+    - {path: /home/ben/task/ckpts/exp-06/checkpoint-3640, step: 3640}
+    - {path: /home/ben/task/ckpts/exp-06/final, step: 3640}
+  training_summary: {final_loss: 0.264, steps: 3640, notes: "second epoch over the same 116,455 rows, lr 5e-6 fresh cosine, shuffle seed 1; train_loss 0.2930 -> 0.2644"}
+  measurements:
+    - {metric: accuracy, value: 0.6406, n: 1319, path: /home/ben/task/eval/exp-06_full1319.json, delta_vs_comparator: 0.0204}
+  diagnostic_result: {value: 0.9932, path: /home/ben/task/analysis/exp-06_full_format.json, notes: "1310/1319 well-formed final answer lines, 10 run-ons out of 1319. No stopping regression from the second epoch."}
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "A second epoch over the winning 116k union at half the learning rate took the full-test score from 0.6202 to 0.6406 (+2.0 points, stderr 0.0132 each). Format compliance held at 0.993, so the gain is entirely in the reasoning term - the mixture had more to give than one epoch extracted."
+  decision: adopt
+  next_step: "Staged as final_model (verified loadable on CPU, eos_token_id [1,106], 8.6 GB, gemma3 architecture). With ~2.5h left, exp-07 tests whether a partial third pass at lr 3e-6 continues the trend; exp-06/final stays as the fallback if it does not."

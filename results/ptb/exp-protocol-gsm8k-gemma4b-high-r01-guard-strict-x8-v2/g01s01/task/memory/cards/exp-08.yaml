@@ -1,0 +1,126 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-08
+created_at: '2026-09-03T17:43:39Z'
+situation:
+  elapsed_h: 7.9
+  remaining_h: 2.1
+  incumbent:
+    ref: exp-03
+    path: /home/ben/task/final_model
+    score:
+      metric: accuracy
+      value: 0.726
+      protocol_n: 500
+  trigger: "The verification eval of the assembled final_model/ returned 0.7133 on dev-150 where exp-03 - byte-identical weights, same greedy generation_config, verified by md5 of both safetensors shards - returned 0.740. Greedy decoding under this harness is therefore not run-to-run reproducible, which means every dev-150 number in this session carries run variance on top of its binomial stderr, and no 2-point comparison in exp-03 to exp-06 was ever separable."
+  trigger_evidence:
+    - path: /home/ben/task/eval/final_model_dev150.json
+      locator: "accuracy 0.7133"
+    - path: /home/ben/task/eval/exp-03_greedy_dev150.json
+      locator: "accuracy 0.74 - same weights (md5 422b1442... and 52bbe5b1... match), same temperature 0.0"
+    - path: /home/ben/task/eval/exp-03_dev500.json
+      locator: "accuracy 0.726 - the n=500 estimate sits between the two n=150 runs"
+  alternatives_rejected:
+    - option: "Start another training stage with the remaining 2.1 h"
+      reason: "A stage is ~1.5 h plus an 8 min eval, landing with no margin, and exp-04, exp-05 and exp-06 each came in at or below the incumbent. Acting needs a reason, and this card is the cheapest way to find one."
+    - option: "Re-score exp-04 and exp-05 at n=500 too and ship the best of four"
+      reason: "25 minutes to pick the maximum of four estimates whose true values are within about a point of each other - that is selection on noise, and the run-variance just demonstrated makes it worse, not better."
+    - option: "Probe on the dev-150 test items to measure the same thing"
+      reason: "Forbidden as training-adjacent inspection and it would contaminate the selection set. The probe uses GSM8K train questions 6000-6299, which are in the training corpus's source pool but were never scored."
+  pitfalls_hit:
+    - what: "Assumed greedy decoding made the eval deterministic, so a 2-point dev-150 gap looked like a real ordering between exp-03 and exp-06. It is not: identical weights scored 0.740 and 0.7133 on two runs of the same command."
+      cost_h: 0.0
+      fix: "Treat n=150 as +/- 4 points at best and make every selection on the n=500 numbers. Recorded here for the next card."
+  smoke_runs: []
+problem:
+  statement: "The model is trained almost entirely on bare question prompts (94% of rows) but is always graded behind a ~1700-token, 10-shot system prefix built from GSM8K-train gold solutions in a terse '<<calc>>' style the training targets never use. If that prefix pulls the model off the solution style it was trained to produce, part of the gap between this model and its ceiling is a train/serve mismatch that no amount of extra maths data would fix."
+  evidence:
+    - path: /usr/local/lib/python3.10/dist-packages/inspect_evals/gsm8k/gsm8k.py
+      locator: "lines 50-66"
+      observation: "the task always prepends a 10-shot system message; the exemplars keep GSM8K's <<48/2=24>> calculator annotations, which scripts/fmt.py strips from every training target."
+    - path: /home/ben/task/data/sft_v1.jsonl
+      locator: "build log: 9777 of 162236 rows carry a few-shot prefix"
+      observation: "only 6% of training rows were rendered with any exemplar prefix, and those used 1-8 shots, never the harness's 10."
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scoring the incumbent on the same 300 held-out GSM8K-train questions with and without the harness's exact 10-shot system prefix shows a lower accuracy with the prefix than without it."
+  mechanism: "The prefix is ten worked solutions in a style the model was trained away from - terse, calculator-annotated, and ending in a bare 'ANSWER: n' with no prose. In-context examples that conflict with a fine-tuned model's own format compete with the fine-tuning; if the model partially imitates the exemplars it produces shorter, less explicit chains than the ones it was trained to get right."
+  expected_effect:
+    metric: accuracy
+    direction: lower
+    against: base_model
+    magnitude: "prefix worse by 2-10 points if the mismatch is real"
+  falsified_if: "the 10-shot prefix scores at or above the zero-shot condition, which would mean the 6% few-shot share in training was already enough and there is no train/serve mismatch to fix."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-03/greedy
+    origin: exp-03
+    hash: "safetensors md5 422b1442fc8e61de964390bf31dcf9d6 / 52bbe5b11be9152943a74a31567fa2b8"
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/eval_fewshot_10.jsonl
+      source: "openai/gsm8k (config main, split train, shuffle seed 42, first 10)"
+      n_examples: 10
+      built_by: null
+      build_command: []
+      selection: "the exact 10 exemplars the harness builds into its system message, re-rendered by scripts/probe_fewshot.py. The probe questions themselves are GSM8K train rows 6000-6299. No test item is read."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "vllm 0.11.0 offline LLM.generate, greedy, prompts rendered by scripts/fmt.py (byte-identical to templates/gemma3.jinja)"
+    peft: none
+    hyperparams: {temperature: 0.0, max_tokens: 768, n_questions: 300}
+    target_format: "unchanged"
+    stop_token: null
+    answer_marker: null
+  command:
+    argv: [python, scripts/probe_fewshot.py, --model, /home/ben/task/ckpts/exp-03/greedy, --n, '300', --offset, '6000']
+    cwd: /home/ben/task
+    script: /home/ben/task/scripts/probe_fewshot.py
+    env: {}
+    log: /home/ben/task/logs/exp-08.log
+  output_dir: /home/ben/task/analysis
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.25
+evaluation:
+  protocol:
+    command: [python, scripts/probe_fewshot.py, --model, '{checkpoint}', --n, '300', --offset, '6000']
+    dev_set: "/home/ben/task/analysis/probe_fewshot.json - GSM8K train rows 6000-6299, graded by the harness's own last-number rule"
+    n: 300
+    seed: 42
+  comparator:
+    ref: exp-03
+    value: null
+    path: null
+  diagnostic:
+    what: "truncation count in each condition - the 10-shot prefix costs ~1700 prompt tokens and could push completions into the cap"
+    n: 300
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.12
+  output_checkpoint: null
+  checkpoints_kept: []
+  training_summary: {final_loss: null, steps: null, notes: "diagnostic only; no weights changed"}
+  measurements:
+    - {metric: accuracy, value: 0.76, n: 300, path: /home/ben/task/analysis/probe_fewshot.json, delta_vs_comparator: 0.0}
+    - {metric: accuracy, value: 0.73, n: 300, path: /home/ben/task/analysis/probe_fewshot.json, delta_vs_comparator: -0.03}
+  diagnostic_result:
+    value: 4.0
+    path: /home/ben/task/analysis/probe_fewshot.json
+    notes: "4 truncations of 300 with the prefix against 3 without, so the ~1700 extra prompt tokens are not pushing completions into the cap. The 3-point cost is a change in what the model writes, not in how much room it has."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "On 300 held-out GSM8K-train questions the incumbent scores 0.760 zero-shot and 0.730 behind the harness's exact 10-shot prefix: the prefix costs about 3 points, in the predicted direction, and not through truncation. The train/serve mismatch is real but small - 9 items of 300, roughly one binomial stderr."
+  decision: abandon_line
+  next_step: "Not acted on, deliberately. Closing it needs a retrain with a much larger share of 10-shot-prefixed rows (~45 min at the 15k rows that fit the budget) plus an 8 min eval, and 1.96 h remain. The effect to be recovered is at most 3 points, while exp-08's own trigger showed that two runs of the identical greedy eval on identical weights differ by 2.7 points - so the fix could not be distinguished from noise even if it worked. Left as the first thing a longer session should try: raise scripts/build_data.py --fewshot-frac from 0.06 towards 0.5 with k=10 exemplars drawn the way the harness draws them, and budget an n=500 eval to measure it."

@@ -1,0 +1,108 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-07
+created_at: '2026-09-02T23:00:09Z'
+situation:
+  elapsed_h: 7.7
+  remaining_h: 2.3
+  incumbent:
+    ref: exp-05
+    path: /home/ben/task/ckpts/exp-05/final
+    score: {metric: accuracy, value: 0.7067, protocol_n: 150}
+  trigger: "exp-06 regressed to 0.6533, so exp-05 is the deliverable. final_model/ was written from exp-05 by finalize.py but has never itself been scored by the grader - only the checkpoint it was copied from has."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/index.md, locator: "exp-05 0.7067 (best), exp-06 0.6533 rejected"}
+    - {path: /home/ben/task/memory/cards/exp-06.yaml, locator: "conclusion.next_step"}
+  alternatives_rejected:
+    - {option: "Ship final_model without scoring it", reason: "pitfall final_model_not_loadable: the copy carries a different directory name, a re-saved tokenizer and copied generation/preprocessor configs, and evaluate.py routes to gemma3.jinja by reading config.json rather than the path. A CPU load test does not exercise any of that; the grader's vLLM path does."}
+    - {option: "Score final_model at n=150 only", reason: "n=150 is what every card in this batch used and it has stderr 0.040; the deliverable deserves one measurement tight enough to state (n=500 gives stderr ~0.021) and 2.3 h is enough for exactly one such run"}
+    - {option: "Score exp-04 and exp-06 at n=500 too, for a clean ranking", reason: "~35 min each and the ranking is not the decision left to make - which checkpoint ships is already settled at n=150 by a 5.3 pt gap in both directions"}
+  pitfalls_hit: []
+  smoke_runs:
+    - {command: [python, finalize.py, --src, /home/ben/task/ckpts/exp-05/final, --dst, /home/ben/task/final_model], outcome: "loads on CPU with transformers, 4.30B params, architectures=['Gemma3ForConditionalGeneration'], generation_config eos_token_id=[1, 106], tokenizer present"}
+problem:
+  statement: "The artefact that will be graded is /home/ben/task/final_model, not /home/ben/task/ckpts/exp-05/final. No measurement of that directory exists, and the two differ in the ways that historically break a submission: directory name (which decides how evaluate.py picks a chat template), a re-saved tokenizer, and copied generation_config/preprocessor_config files."
+  evidence:
+    - {path: /home/ben/task/evaluate.py, locator: "L98-119 model_type()", observation: "'gemma' is not in the string 'final_model', so the template is chosen by reading config.json's architectures[0] - a code path none of the checkpoint evaluations in this batch exercised"}
+    - {path: /home/ben/task/finalize.py, locator: "L38-47", observation: "the tokenizer is re-saved from the base snapshot and three config files are copied in; the assertion that eos_token_id contains 106 passed, but only vLLM can confirm it stops there"}
+  affected_share: null
+  failure_examples: []
+  watch_set: null
+hypothesis:
+  claim: "Scoring /home/ben/task/final_model under the graded protocol at n=500 will reproduce the accuracy measured for the checkpoint it was copied from (exp-05, 0.7067 at n=150), confirming the deliverable is the model that was trained and that the grader loads it correctly."
+  mechanism: "final_model is a byte-copy of exp-05/final plus the base tokenizer and generation_config. If the copy and the template routing are correct, the only difference from the exp-05 measurement is sampling error and the larger item set; if either is wrong, the score collapses toward the base model's 0.0467 (wrong template, no stop token) rather than moving a few points."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: base_model
+    magnitude: "within roughly +/-0.06 of 0.7067 - n=500 covers items 151-500 that no card in this batch has seen, so some drift is expected; a collapse below 0.4 means the artefact is broken"
+  falsified_if: "accuracy below 0.55, or completions that fail to terminate - either would mean final_model is not loading as the trained model does."
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-05
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/hf_cache/hub/datasets--openai--gsm8k/snapshots/740312add88f781978c0658806c59bc2815b9866/main/test-00000-of-00001.parquet
+      source: openai/gsm8k@740312add88f781978c0658806c59bc2815b9866
+      n_examples: 500
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '500']
+      selection: "measurement only - no training. First 500 items of the official test split as loaded by inspect_evals/gsm8k, plus its 10 fewshot items from the TRAIN split at seed 42."
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: other
+    framework: "inspect-ai + vllm 0.11.0 (evaluate.py as shipped)"
+    peft: none
+    hyperparams: {seed: 42}
+    target_format: "n/a - measurement only"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, final_model, --limit, '500', --max-connections, '32', --gpu-memory-utilization, '0.85', --json-output-file, /home/ben/task/eval/final_model_dev500.json]
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {HF_HOME: /home/ben/hf_cache}
+    log: /home/ben/task/logs/eval_final_model_dev500.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 0.7}
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, final_model, --limit, '500', --max-connections, '32', --gpu-memory-utilization, '0.85']
+    dev_set: "official --limit 500 (first 500 items of openai/gsm8k main test, deterministic order; a superset of the dev-150 every other card used)"
+    n: 500
+    seed: 42
+  comparator:
+    ref: exp-05
+    value: 0.7067
+    path: /home/ben/task/eval/exp-05_dev150.json
+  diagnostic:
+    what: "natural-stop share and share of completions carrying an 'ANSWER:' line - the two things a broken template or a lost generation_config would destroy"
+    n: 500
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.1
+  output_checkpoint: /home/ben/task/final_model
+  checkpoints_kept:
+    - {path: /home/ben/task/final_model, step: 1134}
+  training_summary: {final_loss: null, steps: null, notes: "measurement card, no training"}
+  measurements:
+    - {metric: accuracy, value: 0.682, n: 500, path: /home/ben/task/eval/final_model_dev500.json, delta_vs_comparator: -0.0247}
+  diagnostic_result:
+    value: 0.996
+    path: /home/ben/task/analysis/final_model_dev500_diag.json
+    notes: "498/500 completions terminate naturally and carry an 'ANSWER:' line; median completion 444 chars. The grader picked gemma3.jinja from config.json's architectures field and vLLM stopped at <end_of_turn>, so the copy and the template routing are both correct."
+  watch_set_result: null
+  failure: null
+conclusion:
+  verdict: supported
+  mechanism_verdict: supported
+  summary: "final_model scores 0.682 at n=500 (stderr 0.021) against exp-05's 0.7067 at n=150 (stderr 0.040) - the same model within sampling error, with 99.6% clean terminations. The deliverable is the trained model and the grader loads it correctly."
+  decision: adopt
+  next_step: "Batch complete. final_model = exp-05/final: base gemma-3-4b-pt -> 125k OpenMathInstruct-2 GSM8K rows (exp-03) -> 38k RFT + 32k fresh rows (exp-04) -> 64.8k fresh rows (exp-05). dev-150 went 0.0467 -> 0.5333 -> 0.6133 -> 0.6533 -> 0.7067. A next batch should attack the remaining failures - wrong problem set-up with correct arithmetic - with problem sources beyond OpenMathInstruct-2's GSM8K slice, which exp-06 showed is exhausted."

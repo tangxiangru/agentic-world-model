@@ -1,0 +1,132 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-04
+created_at: '2026-09-03T14:35:00Z'
+
+# ---- 0. Situation ----------------------------------------------------------
+situation:
+  elapsed_h: 4.8
+  remaining_h: 5.2
+  incumbent:
+    ref: exp-02
+    path: /home/ben/task/ckpts/exp-02/final
+    score: {metric: accuracy, value: 0.7466666666666667, protocol_n: 150}
+  trigger: "exp-03 died at step 2600 of 5144 writing its first checkpoint and never tested its hypothesis. The hypothesis is still the right one - exp-02 is format-saturated (98.7% clean termination, first-stated answer within one item of the scored answer) and its only remaining headroom is solving ability - so the intervention is re-run with the crash fixed and the row count cut to fit what is left of the budget."
+  trigger_evidence:
+    - {path: /home/ben/task/memory/cards/exp-03.yaml, locator: "result.failure, conclusion"}
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: "accuracy=0.7467, first_ANSWER_correct=0.740, stop_reason_stop=0.9867"}
+  alternatives_rejected:
+    - {option: "Re-run all 166020 rows as exp-03 intended (~2.3h)", reason: "5.2h remain and the tail still needs a dev-150 eval, a larger-n selection eval of both candidates, and final_model packaging with a load check; 120000 rows (~1.7h) buys most of the effect and keeps ~1.7h of slack for a second failure"}
+    - {option: "Give up on stage 2 and ship exp-02 now", reason: "exp-02 is already saved and costs nothing to keep as the fallback; the GPU would otherwise sit idle for 5h, and stage 2 can only be adopted if it actually measures higher"}
+    - {option: "Resume from ckpts/exp-03/checkpoint-2600", reason: "unusable - save_pretrained writes generation_config before the weight shards, so the directory holds only config.json"}
+    - {option: "Rejection-sampling fine-tuning on exp-02's own correct samples", reason: "still the fallback line, but the sampling pass costs ~0.5h before training starts and the resulting targets would be 4B-quality against OpenMathInstruct-2's 405B-quality; with one clean shot left, take the higher-quality data"}
+    - {option: "Round-3 data (data/omi2_gsm8k_round3.jsonl, 61685 rows at up to 8 solutions/problem, already built and contamination-checked)", reason: "there is only budget for one more training run; the 120000 round-2 rows are the bigger and less redundant half"}
+  pitfalls_hit:
+    - {what: "The exp-03 crash (greedy generation_config on the parent + strict GenerationConfig validation at checkpoint save) cost 1.2h of training plus ~0.8h of idle GPU", cost_h: 2.0, fix: "train_sft.py now resets model.generation_config to a valid sampling config after load and writes the greedy config to final/ and every checkpoint-*/ after training"}
+  smoke_runs:
+    - {command: [python, train_sft.py, --data, data/omi2_gsm8k_round2.jsonl, --out, ckpts/smoke3, --parent, /home/ben/task/ckpts/exp-02/final, --limit, "2000", --max-steps, "3", --save-steps, "2"], outcome: "reproduces exp-03's exact failing path (second stage from a greedy-config parent, forced checkpoint save at step 2) and now completes: checkpoint-2, checkpoint-3 and final all written, each carrying the greedy generation_config.json"}
+    - {command: [python, prep_data2.py, --out, data/omi2_gsm8k_round2.jsonl, --exclude, data/omi2_gsm8k_all.jsonl, --max-per-problem, "4"], outcome: "166020 rows, 0 shared with exp-02's training file; train_2M adds only 6 gsm8k problems exp-02 had not seen, so this buys solution diversity, not problem coverage"}
+    - {command: [python, ../contamination_check.py, --reference, ../test_data.json, --input, data/omi2_gsm8k_round2.jsonl], outcome: "166020 documents scanned, 0 contaminated, 0 matches"}
+
+# ---- 1. Problem ------------------------------------------------------------
+problem:
+  statement: "exp-02 is wrong on 25.3% of dev-150 (38 items) and format is no longer the cause: 98.7% terminate cleanly and the first stated answer matches the scored answer to within one item, so the residual is reasoning and arithmetic. exp-02 was trained on 152631 solutions over 80815 problems - only 1.89 distinct worked solutions per problem, which is thin coverage of the ways each problem can be solved."
+  evidence:
+    - {path: /home/ben/task/analysis/exp-02_diagnostic.json, locator: "accuracy=0.7467, first_ANSWER_correct=0.740, stop_reason_stop=0.9867", observation: "the format channel is saturated; the 0.007 gap between first-stated and scored answer is one item, so no further points are recoverable from formatting"}
+    - {path: /home/ben/task/data/omi2_gsm8k_all.jsonl, locator: "152847 rows over 80815 unique problems", observation: "1.89 solutions per problem in exp-02's training set"}
+  affected_share: 1.0
+  failure_examples: []
+  watch_set: null
+
+# ---- 2. Hypothesis ---------------------------------------------------------
+hypothesis:
+  claim: "A second SFT stage from ckpts/exp-02/final over 120000 further OpenMathInstruct-2 solutions to the same problems - none of them seen in exp-02 - raises dev-150 accuracy above exp-02's 0.7467."
+  mechanism: "Several independent correct derivations of the same problem teach the distribution of valid solutions rather than one memorised chain; this is the axis OpenMathInstruct-2's published 1M/2M/5M scaling curve measures. Every row is a target the model has not been fitted to, so no gradient is spent re-fitting text it already reproduces. The LR restarts at 6e-6, below exp-02's 1e-5 peak, with a 2% warmup, so the stage refines rather than resets."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: exp-02
+    magnitude: "+2 to +6 points. dev-150 has a stderr of ~3.5 points, so anything under ~7 points is not resolvable at n=150; the deciding comparison between the two checkpoints is deferred to a selection card that scores both at larger n."
+  falsified_if: "dev-150 accuracy is below 0.7467, or clean termination (stop_reason='stop') falls below 0.95, which would mean the LR restart damaged the format behaviour exp-02 established."
+
+# ---- 3. Setup --------------------------------------------------------------
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/ckpts/exp-02/final
+    origin: exp-02
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: /home/ben/task/data/omi2_gsm8k_round2.jsonl
+      source: "nvidia/OpenMathInstruct-2 rev 469216e3f46f4dacf476b382e192485ea51a143e, split train_2M, rows with problem_source in {gsm8k, augmented_gsm8k}"
+      n_examples: 166020
+      built_by: /home/ben/task/prep_data2.py
+      build_command: [python, prep_data2.py, --out, data/omi2_gsm8k_round2.jsonl, --exclude, data/omi2_gsm8k_all.jsonl, --max-per-problem, "4"]
+      selection: "identical cleaning to exp-02 (numeric expected_answer, \\boxed{} unwrapped, no second answer marker, target ends '\\n\\nANSWER: <n><end_of_turn>'), then two exclusions: drop any (problem, solution) pair already in data/omi2_gsm8k_all.jsonl, and cap the COMBINED count at 4 solutions per problem. The file holds 166020 rows; this run reads the first 120000 of them (the file was shuffled at build time with seed 1, so that is a random subset) to fit the remaining budget."
+      contamination_check: passed
+      mixture_weight: 1.0
+  method:
+    family: sft
+    framework: "transformers 4.57.3 Trainer, full-parameter, torch 2.8.0+cu129, flash_attention_2"
+    peft: "none"
+    hyperparams: {lr: 6.0e-6, epochs: 1.0, batch_size: 8, grad_accum: 4, max_seq_len: 1024, scheduler: cosine_with_min_lr, warmup: 0.02, weight_decay: 0.0, precision: bf16, seed: 1}
+    target_format: "unchanged from exp-02: chain of thought, blank line, 'ANSWER: <number>', <end_of_turn>; loss on the target only, prompt masked to -100, prompt rendered byte-for-byte as templates/gemma3.jinja renders it; 10% of rows carry 1-3 gsm8k-TRAIN few-shot exemplars in the harness's own few-shot format. vision_tower and multi_modal_projector stay frozen."
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, train_sft.py, --data, /home/ben/task/data/omi2_gsm8k_round2.jsonl, --out, /home/ben/task/ckpts/exp-04, --parent, /home/ben/task/ckpts/exp-02/final, --limit, "120000", --epochs, "1.0", --lr, "6e-6", --bs, "8", --grad-accum, "4", --max-seq-len, "1024", --fewshot-frac, "0.1", --grad-ckpt, "1", --attn, flash_attention_2, --warmup-ratio, "0.02", --min-lr-ratio, "0.05", --save-steps, "1900", --seed, "1"]
+    cwd: /home/ben/task
+    script: /home/ben/task/train_sft.py
+    env: {PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"}
+    log: /home/ben/task/logs/exp-04.log
+  output_dir: /home/ben/task/ckpts/exp-04
+  checkpoints:
+    every_steps: 1900
+    keep: last
+  budget: {gpu: H100-80GB, planned_h: 1.7}
+
+# ---- 4. Evaluation ---------------------------------------------------------
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, "{checkpoint}", --limit, "150", --max-connections, "16"]
+    dev_set: "official --limit 150 (first 150 items of inspect_evals/gsm8k test split, unshuffled)"
+    n: 150
+    seed: null
+  comparator:
+    ref: exp-02
+    value: 0.7466666666666667
+    path: /home/ben/task/eval/exp-02_dev150.json
+  diagnostic:
+    what: "share of the 150 completions with stop_reason='stop' - checks the LR restart did not undo exp-02's termination behaviour"
+    n: 150
+    metric: accuracy
+    direction: higher
+
+# ---- 5. Result -------------------------------------------------------------
+result:
+  execution: completed
+  wall_h: 1.63
+  output_checkpoint: /home/ben/task/ckpts/exp-04/final
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/exp-04/final, step: 3750}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-3750, step: 3750}
+    - {path: /home/ben/task/ckpts/exp-04/checkpoint-1900, step: 1900}
+  training_summary:
+    final_loss: 0.2666
+    steps: 3750
+    notes: "1 epoch over 120000 previously unseen round-2 rows, 5855 s wall (20.5 samples/s). train_loss 0.2666 against exp-02's 0.2815, i.e. the second stage starts already near exp-02's converged loss and only edges lower - consistent with the model having little left to learn from this data. The step-1900 checkpoint saved without error, which was the exact operation that killed exp-03."
+  measurements:
+    - {metric: accuracy, value: 0.7466666666666667, n: 150, path: /home/ben/task/eval/exp-04_dev150.json, delta_vs_comparator: 0.0}
+  diagnostic_result:
+    value: 0.9866666666666667
+    path: /home/ben/task/analysis/exp-04_diagnostic.json
+    notes: "termination unchanged at 98.7%, ANSWER-line rate unchanged at 98.7%: the LR restart did not damage the format behaviour. first_ANSWER_correct rose from 0.740 to 0.7467, now exactly equal to the scored accuracy, so nothing at all is being lost to the last-number rule. Mean completion length fell from 674 to 629 chars - the extra solutions made the model slightly terser."
+  watch_set_result: null
+  failure: null
+
+# ---- 6. Conclusion ---------------------------------------------------------
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: not_tested
+  summary: "dev-150 is 0.7467 for exp-04, identical to exp-02's 0.7467 - not the predicted +2 to +6. Doubling the worked solutions per problem from 1.89 to ~3.4 bought nothing measurable, and the training loss says why: the second stage opened at roughly the loss exp-02 had converged to, so these targets carried little new signal. Format behaviour was preserved (98.7% clean termination), so the run is a clean null rather than a regression."
+  decision: iterate
+  next_step: "The identical scores are within one item of each other at n=150, where the stderr is 3.5 points, so this card cannot say which checkpoint to ship. exp-05 is a selection card: score both ckpts/exp-02/final and ckpts/exp-04/final at n=500 under one protocol and install the winner as final_model. Do NOT spend the remaining budget on a third data-scaling stage on the same 80815 problems - this card is the evidence that axis is saturated; the round-3 file (61685 rows) stays unused."

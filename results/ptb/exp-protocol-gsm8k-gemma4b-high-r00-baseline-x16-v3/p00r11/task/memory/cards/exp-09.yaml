@@ -1,0 +1,112 @@
+schema_version: awm-experiment-card-v2
+card_id: exp-09
+created_at: '2026-09-03T06:01:37Z'
+situation:
+  elapsed_h: 8.05
+  remaining_h: 1.95
+  incumbent:
+    ref: exp-07
+    path: /home/ben/task/final_model
+    score: {metric: accuracy, value: 0.7043, protocol_n: 1319}
+  trigger: "The verified final_model run leaves 13 of 1319 completions running to the 4000-token cap; every one of them is a counting loop that enumerates the same step forever ('the four-hundred-eleventh bid is ...'), so those items score 0 by construction."
+  trigger_evidence:
+    - {path: /home/ben/task/analysis/final_model_verify_summary.json, locator: "stop_reasons.max_tokens=13, well_formed_and_stopped=0.990"}
+    - {path: /home/ben/task/logs/2026-09-03T05-59-12+00-00_gsm8k_fhsijg6HGkd7aubGg9wCSk.json, locator: "samples with stop_reason=max_tokens", observation: "the model enumerates bid after bid at +$50 instead of dividing; greedy decoding cannot escape the repetition"}
+  alternatives_rejected:
+    - {option: "Train the loops away", reason: "1.95 h left; a training round takes ~1 h plus evaluation and the last two training rounds both lost accuracy"}
+    - {option: "Shorten max_tokens so loops are cut off earlier", reason: "the flag belongs to evaluate.py, which is immutable, and a truncated loop still scores 0"}
+    - {option: "Accept the 13 losses", reason: "that is the fallback if this measurement does not come out positive; the incumbent config is kept untouched in final_model while the variant is tested in a copy"}
+  pitfalls_hit: []
+  smoke_runs: []
+problem:
+  statement: "13 of 1319 test items are lost to greedy repetition loops rather than to wrong reasoning: the model starts enumerating a sequence one term at a time and never reaches an ANSWER line. This is the single failure mode greedy decoding introduced, and it caps the incumbent at 0.704."
+  evidence:
+    - {path: /home/ben/task/analysis/final_model_verify_summary.json, locator: "stop_reasons", observation: "1306 stop, 13 max_tokens"}
+    - {path: /home/ben/task/analysis/final_model_greedy_full_summary.json, locator: "stop_reasons", observation: "the same 13 in the earlier greedy run, so the loops are deterministic, not sampling noise"}
+    - {path: /home/ben/task/analysis/exp-08_greedy_full_summary.json, locator: "stop_reasons.max_tokens=8", observation: "a further RFT round reduced loops to 8 but cost 3 points of accuracy, so loops are not worth a training round"}
+  affected_share: 0.0099
+  failure_examples:
+    - {id: "(auction/bidding item)", source: /home/ben/task/logs/2026-09-03T05-59-12+00-00_gsm8k_fhsijg6HGkd7aubGg9wCSk.json, question: "(test item, text in the eval log)", gold: "(unread)", model_output: "The second bid is $250 ... the four-hundred-eleventh bid is $...", failure: "enumerates the sequence term by term instead of dividing; never terminates"}
+  watch_set: null
+hypothesis:
+  claim: "Declaring a mild repetition penalty (1.05) alongside greedy decoding in generation_config.json raises full-test accuracy above the incumbent's 0.7043."
+  mechanism: "vLLM reads repetition_penalty from the model's generation_config defaults, exactly as it reads temperature. A 1.05 penalty makes each re-emission of an already-used token slightly less likely, which is enough to break a degenerate enumeration loop while barely perturbing a normal derivation. The risk is the mirror image: arithmetic chains legitimately reuse digits and words, so too strong a penalty distorts correct solutions."
+  expected_effect:
+    metric: accuracy
+    direction: higher
+    against: incumbent
+    magnitude: "+0 to +1 point at n=1319 (13 items is the ceiling), with a real chance of a net loss if the penalty perturbs correct derivations"
+  falsified_if: "full-test accuracy at or below 0.7043, or the max_tokens count does not fall below 13"
+setup:
+  parent_checkpoint:
+    path: /home/ben/task/final_model
+    origin: exp-03
+    hash: null
+  base_model: google/gemma-3-4b-pt
+  data:
+    - path: "hf://openai/gsm8k:main:test"
+      source: openai/gsm8k
+      n_examples: 1319
+      built_by: null
+      build_command: [python, evaluate.py, --limit, '-1']
+      selection: "evaluation input only, no training in this card: the full official test set as the harness reads it"
+      contamination_check: not_run
+      mixture_weight: 0.0
+  method:
+    family: decode-config
+    framework: "generation_config.json edit in a copy of the final weights (ckpts/decode-reppen); weights unchanged"
+    peft: none
+    hyperparams: {lr: null, epochs: null, batch_size: null, grad_accum: null, max_seq_len: null, scheduler: null, warmup: null, weight_decay: null, precision: bf16, seed: null}
+    target_format: "unchanged: chain of thought, 'ANSWER: <number>' as the last line, then <end_of_turn>"
+    stop_token: "<end_of_turn>"
+    answer_marker: "ANSWER: "
+  command:
+    argv: [python, evaluate.py, --model-path, /home/ben/task/ckpts/decode-reppen, --limit, '-1', --json-output-file, /home/ben/task/eval/reppen_greedy_full.json, --max-connections, '16', --gpu-memory-utilization, '0.85']
+    cwd: /home/ben/task
+    script: /home/ben/task/evaluate.py
+    env: {}
+    log: /home/ben/task/logs/exp-09.log
+  output_dir: /home/ben/task/eval
+  checkpoints:
+    every_steps: null
+    keep: last
+  budget:
+    gpu: H100-80GB
+    planned_h: 0.2
+evaluation:
+  protocol:
+    command: [python, evaluate.py, --model-path, '{checkpoint}', --limit, '-1', --json-output-file, '{out}.json', --max-connections, '16', --gpu-memory-utilization, '0.85']
+    dev_set: official full test set (1319 items), greedy decoding
+    n: 1319
+    seed: 42
+  comparator:
+    ref: exp-07
+    value: 0.7043
+    path: /home/ben/task/eval/final_model_greedy_full_verify.json
+  diagnostic:
+    what: "number of completions that hit the 4000-token cap (13 for the incumbent)"
+    n: 1319
+    metric: accuracy
+    direction: higher
+result:
+  execution: completed
+  wall_h: 0.08
+  output_checkpoint: /home/ben/task/ckpts/decode-reppen
+  checkpoints_kept:
+    - {path: /home/ben/task/ckpts/decode-reppen, step: 0}
+  training_summary: {final_loss: null, steps: null, notes: "no training; the variant directory symlinks final_model's weights and differs only in generation_config.json (repetition_penalty 1.05). final_model itself was never modified."}
+  measurements:
+    - {metric: accuracy, value: 0.7013, n: 1319, path: /home/ben/task/eval/reppen_greedy_full.json, delta_vs_comparator: -0.003}
+  diagnostic_result:
+    value: 12.0
+    path: /home/ben/task/analysis/reppen_greedy_full_summary.json
+    notes: "the penalty broke exactly one of the 13 loops (13 -> 12 max_tokens completions) and cost 4 items elsewhere"
+  watch_set_result: null
+  failure: null
+
+conclusion:
+  verdict: contradicted
+  mechanism_verdict: contradicted
+  summary: "repetition_penalty 1.05 scored 0.7013 against the incumbent's 0.7043 and broke only one of the 13 loops. The penalty perturbs correct derivations about as often as it rescues a degenerate one, so the loops stay unfixed and the decode config is left as plain greedy."
+  decision: reject
+  next_step: "None: final_model keeps exp-03/final's weights with greedy decoding, verified at 0.7043 on the full test set from a fresh process."
