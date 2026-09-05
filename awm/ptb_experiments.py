@@ -32,7 +32,7 @@ APPROVED_BASE_MODELS = (
     "HuggingFaceTB/SmolLM3-3B-Base",
     "google/gemma-3-4b-pt",
 )
-APPROVED_TASKS = ("gsm8k", "aime2025")
+APPROVED_TASKS = ("gsm8k", "aime2025", "humaneval")  # HumanEval also requires receipt-bound admission.
 APPROVED_AGENT_SETUPS = (
     ("claude_vertex_max", "claude-opus-5[1m]", "max", 1_000_000),
     ("claude_vertex_xhigh", "claude-opus-5[1m]", "xhigh", 1_000_000),
@@ -476,6 +476,13 @@ def validate_manifest(data: dict[str, Any]) -> None:
         raise ExperimentError(str(exc)) from exc
     contract = data.get("contract") or {}
     tasks = _batch_tasks(contract)
+    if "humaneval" in tasks:
+        try:
+            if set(tasks) != {"humaneval"}:
+                raise ptb_environment.EnvironmentError("HumanEval uses a separate admitted task batch")
+            ptb_environment.validate_admission_reference(data)
+        except ptb_environment.EnvironmentError as exc:
+            raise ExperimentError(str(exc)) from exc
     expected = {
         "agent_budget_hours": 10,
         "gpus": 1,
@@ -787,6 +794,8 @@ def local_issues(
                 issues.append(f"untracked agent asset cannot enter frozen source: {relative}")
     env = read_ptb_env()
     issues.extend(ptb_environment.worker_source_issues(paths.REPO_ROOT, PTB_ROOT, env))
+    if "humaneval" in selected_tasks:
+        issues.extend(_environment_admission_issues(data, env))
     containers = Path(env.get("POST_TRAIN_BENCH_CONTAINERS_DIR", PTB_ROOT / "containers"))
     hf_home = Path(env.get("HF_HOME", ""))
     selected_base_models = {cell["base_model"] for cell in selected_cells}
@@ -846,6 +855,29 @@ def local_issues(
                     f"unreadable {expected_context}-token provider validation for {profile}: {exc}"
                 )
     return issues
+
+
+def _environment_admission_issues(data: dict[str, Any], env: dict[str, str]) -> list[str]:
+    try:
+        reference = ptb_environment.validate_admission_reference(data)
+        path = paths.REPO_ROOT / reference["receipt"]
+        if not _is_git_tracked(paths.REPO_ROOT, reference["receipt"]) or _sha256(path) != reference["sha256"]:
+            raise ptb_environment.EnvironmentError("admission receipt is untracked or changed")
+        receipt = load_receipt(path)
+        if (receipt.get("ownership", {}).get("branch") != data.get("ownership", {}).get("branch")
+                or receipt.get("subqueue") != env.get("POST_TRAIN_BENCH_SLURM_SUBQUEUE")):
+            raise ptb_environment.EnvironmentError("admission belongs to a different experiment owner")
+        commit = _git(PTB_ROOT, "rev-parse", "HEAD")
+        if data.get("source", {}).get("ptb_commit", commit) != commit:
+            raise ptb_environment.EnvironmentError("current PTB source differs from frozen scientific receipt")
+        completed = {str(job["job_id"]) for job in receipt["jobs"] if _job_state(str(job["job_id"])) == "COMPLETED"}
+        ptb_environment.validate_readiness(
+            data, receipt, site_nodes=_expanded_nodes(env.get("POST_TRAIN_BENCH_SLURM_NODELIST", "")),
+            ptb_commit=commit, completed_job_ids=completed,
+        )
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as exc:
+        return [f"HumanEval environment admission failed: {exc}"]
+    return []
 
 
 def _base_model_snapshot_issues(model: str, revision: str, snapshot: Path) -> list[str]:
@@ -1193,6 +1225,8 @@ def submit(
         },
         "jobs": [],
     }
+    if "environment_admission" in data:
+        receipt["environment_admission"] = dict(data["environment_admission"])
     if "placement" in data:
         receipt["placement"] = data["placement"]
     if operation:
@@ -1349,6 +1383,10 @@ def release_held(
         raise ExperimentError(f"cannot inspect ownership before held release: {exc}") from exc
     if not snapshot.get("ownership_ok"):
         raise ExperimentError("OWNERSHIP FAIL: held jobs remain held")
+    if (receipt.get("contract") or {}).get("task") == "humaneval":
+        admission_issues = _environment_admission_issues(receipt, ptb_env)
+        if admission_issues:
+            raise ExperimentError("; ".join(admission_issues))
 
     frozen_nodelist = str(
         (receipt.get("site") or {}).get("POST_TRAIN_BENCH_SLURM_NODELIST", "")

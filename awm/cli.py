@@ -619,7 +619,7 @@ def build_parser() -> argparse.ArgumentParser:
     results.add_argument("manifest", nargs="?", type=Path, default=default_manifest)
     results.add_argument("--all", action="store_true", help="also show incomplete latest attempts")
     results.add_argument("--json", action="store_true")
-    results.add_argument("--task", choices=["gsm8k", "aime2025"])
+    results.add_argument("--task", choices=["gsm8k", "aime2025", "humaneval"])
     results.add_argument("--cell", action="append")
     results.set_defaults(func=_ptb)
     retry = eps.add_parser("retry", help="atomically retry explicit failed formal cells")

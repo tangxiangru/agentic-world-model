@@ -366,7 +366,8 @@ def test_scoped_readiness_and_harvest_remain_non_scientific(tmp_path, monkeypatc
     assert status["scientific_result"] is False and status["complete"] is False and status["eligible"] is False
     assert (tmp_path / "bundle/environment/official_eval/opus_5.sif/normal/home/task/metrics.json").is_file()
     assert ptb_results.discover_attempts(rec) == {job["cell_id"]: []}
-    assert "humaneval" not in ptb.APPROVED_TASKS
+    with pytest.raises(ptb.ExperimentError, match="receipt-backed environment admission"):
+        ptb.validate_manifest(proposed)
 
 
 def test_failed_probe_still_harvests_logs(tmp_path, monkeypatch):
@@ -467,3 +468,58 @@ def test_inner_deadline_cannot_masquerade_as_outer_cleanup(tmp_path, elapsed, gr
     (root / "acceptance.json").write_text(json.dumps(report))
     with pytest.raises(environment.EnvironmentError, match="outer timeout"):
         environment.validate_acceptance(rec, job, site_nodes=NODES, expected_uid=1234)
+
+
+def test_humaneval_requires_explicit_admission_reference():
+    data = manifest()
+    data.pop("operation")
+    data["contract"]["task"] = "humaneval"
+    with pytest.raises(ptb.ExperimentError, match="receipt-backed environment admission"):
+        ptb.validate_manifest(data)
+    data["environment_admission"] = {"receipt": "results/ptb/synthetic/environment-acceptance.json", "sha256": "a" * 64}
+    ptb.validate_manifest(data)  # structural acceptance is not submission readiness
+    data.pop("placement")
+    with pytest.raises(ptb.ExperimentError, match="requested_nodes"):
+        ptb.validate_manifest(data)
+
+
+@pytest.mark.parametrize("change", ["none", "receipt_hash", "unfinished", "owner", "ptb"])
+def test_live_humaneval_gate_uses_frozen_receipt_and_native_evidence(tmp_path, monkeypatch, change):
+    native_modules = environment._native_modules()
+    rec, _job, _root, _report = report_fixture(tmp_path)
+    rec["subqueue"] = "gangda_exp-protocol-evolve"
+    receipt_path = tmp_path / "results/ptb/synthetic/environment-acceptance.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(json.dumps(rec))
+    data = manifest()
+    data.pop("operation")
+    data["contract"]["task"] = "humaneval"
+    data["environment_admission"] = {"receipt": "results/ptb/synthetic/environment-acceptance.json",
+                                     "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest()}
+    if change == "receipt_hash":
+        data["environment_admission"]["sha256"] = "0" * 64
+    if change == "owner":
+        data["ownership"]["branch"] = "different_owner"
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(environment, "_native_modules", lambda: native_modules)
+    monkeypatch.setattr(ptb, "_is_git_tracked", lambda *args: True)
+    monkeypatch.setattr(ptb, "_git", lambda *args: "c" * 40 if change == "ptb" else "b" * 40)
+    monkeypatch.setattr(ptb, "_job_state", lambda job_id: "RUNNING" if change == "unfinished" else "COMPLETED")
+    monkeypatch.setattr(ptb, "_expanded_nodes", lambda value: NODES)
+    issues = ptb._environment_admission_issues(data, {"POST_TRAIN_BENCH_SLURM_SUBQUEUE": rec["subqueue"],
+                                                   "POST_TRAIN_BENCH_SLURM_NODELIST": ",".join(sorted(NODES))})
+    assert bool(issues) is (change != "none")
+
+
+def test_humaneval_release_refuses_missing_admission_before_any_release(tmp_path, monkeypatch):
+    rec = receipt(tmp_path)
+    rec.pop("operation")
+    rec["kind"] = "formal"
+    rec["contract"]["task"] = "humaneval"
+    path = tmp_path / "formal.json"
+    path.write_text(json.dumps(rec))
+    monkeypatch.setattr(ptb, "read_ptb_env", lambda: {"POST_TRAIN_BENCH_SLURM_OWNERSHIP_REGISTRY": "/synthetic/registry"})
+    monkeypatch.setattr(slurm_queue, "collect_snapshot", lambda _path: {"ownership_ok": True})
+    monkeypatch.setattr(ptb.subprocess, "run", lambda *args, **kwargs: pytest.fail("must not release"))
+    with pytest.raises(ptb.ExperimentError, match="HumanEval environment admission failed"):
+        ptb.release_held(path)

@@ -71,6 +71,20 @@ def requested_nodes(document: dict) -> set[str] | None:
     return set(nodes)
 
 
+def validate_admission_reference(document: dict) -> dict:
+    reference = document.get("environment_admission")
+    if (not isinstance(reference, dict) or set(reference) != {"receipt", "sha256"}
+            or not isinstance(reference.get("receipt"), str)
+            or not reference["receipt"].startswith("results/ptb/")
+            or not reference["receipt"].endswith(".json")
+            or ".." in Path(reference["receipt"]).parts
+            or not re.fullmatch(r"[0-9a-f]{64}", str(reference.get("sha256", "")))):
+        raise EnvironmentError("HumanEval requires a frozen receipt-backed environment admission")
+    if requested_nodes(document) is None:
+        raise EnvironmentError("HumanEval requires explicitly admitted requested_nodes")
+    return reference
+
+
 def effective_nodes(document: dict, site_nodes: set[str]) -> set[str]:
     requested = requested_nodes(document)
     if requested is None:

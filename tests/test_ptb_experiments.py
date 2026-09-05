@@ -1033,7 +1033,7 @@ def test_a_cell_task_outside_the_batch_tasks_is_rejected() -> None:
 
 def test_a_task_outside_the_approved_list_is_rejected() -> None:
     data = _two_repeats_manifest()
-    data["contract"]["task"] = "humaneval"
+    data["contract"]["task"] = "gpqamain"
     with pytest.raises(ptb.ExperimentError, match="subset"):
         ptb.validate_manifest(data)
 
