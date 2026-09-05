@@ -74,3 +74,9 @@ the shared reservation; never a global override or handcrafted sbatch.
 The existing knowledge4/guard4 are already RUNNING. This independent discovery
 does not wait for HumanEval admission. HumanEval remains a separate approved
 cross-task study, with actual node/runtime/evidence checks required before launch.
+
+## Shared-source startup repair
+
+Jobs93051/93052 terminated in0–1s on ondem0 with exit1:0, before any discovered PTB result or scientist trace. Their frozen WorkDir was the submitting host’s /tmp checkout. A read-only no-GPU step in owned job92129 verified that this temporary entrypoint is not visible on a worker, whereas the established /rmeng_data shared operator entrypoint is readable. No root-cause stack trace exists because even stdout/stderr paths were under that unavailable temporary tree.
+
+V2 retains the same two configurations and method tree; it changes only immutable batch identity and uses the already-proven shared submitting checkout. These failed attempts remain startup evidence and do not count as model outcomes or reset repetition spend. Local source/image checks alone do not establish worker-readable WorkDir/entrypoint paths. Never submit cluster jobs from a local temporary development checkout.
