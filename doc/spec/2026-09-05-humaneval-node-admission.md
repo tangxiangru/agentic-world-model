@@ -74,3 +74,16 @@ results are the final admission gate. No HumanEval model result exists yet.
 ## Actual node entrypoint correction
 
 Environment job93104 reached the frozen source on ondem0 but stopped before the probe: the worker has no `python` alias. Its exact stderr is retained in the failed environment bundle. A no-GPU, non-root read in owned job93070 confirmed `/usr/bin/python3`3.10.12, working pidfd APIs, and readable shared bwrap/Apptainer/config paths. V2 changes the host call to python3, retains the same probe logic and hashes, and freezes a new PTB commit. It is still an environment operation, not a scientist repeat or score.
+
+## Actual outer lifecycle repair
+
+Job93118 read all164 HumanEval rows and passed five invented native cases in
+opus_5.sif on ondem0. The separate outer interruption left two live descendants
+and failed; vllm image acceptance did not run. Keep its raw failed receipt.
+V3 uses a production-shared child-subreaper wrapper with bounded pidfd cleanup,
+revalidated ancestry and adopted-zombie reaping. Acceptance still requires the
+real admission event, live sandbox at deadline and end before the inner30s
+timeout. This is a source repair, never retrospective relabeling of V2.
+Final focused CPU suite17 passed; related sandbox/evidence/provenance suite
+passed with22 explicit native skips. Independent review found and fixed zombie
+reaping and PID ownership races. Production retains the existing time budgets.
