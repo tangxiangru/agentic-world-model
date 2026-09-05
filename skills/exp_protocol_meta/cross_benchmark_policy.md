@@ -1,5 +1,14 @@
 # Cross-benchmark comparison: approved 2026-09-04
 
+**2026-09-05 current scope:** the user directed this round to skip GPQA, analyse
+the newly completed comparison, run the next justified work and use the16-GPU
+experiment subqueue. The recorded [pending-first instruction](../../doc/exp_protocol_iterations/2026-09-05-opus48-second-release.md)
+supersedes retaining ready work solely to meet a numeric held floor: run valid
+work and replenish useful downstream work asynchronously. Ownership, exact
+receipt placement and per-receipt release authority remain required. Read the
+[new execution lessons](opus48_execution_lessons.md); historical approvals and
+results below retain their original provenance, not a claim of current readiness.
+
 The latest user discussion requests experiments beyond GSM8K, a scientist-model
 change to Opus4.8, several leading/current protocol variants and a genuinely
 protocol-free baseline, **four independent replicates per arm**, plus a GSM8K
