@@ -30,7 +30,7 @@ from typing import Any
 
 import yaml
 
-from awm import paths, ptb_results, slurm_queue
+from awm import paths, ptb_evidence_retention, ptb_results, slurm_queue
 from awm import ptb_experiments as ptb
 
 QUEUE_PATH = Path("experiments/posttrainbench/queue.yaml")
@@ -474,6 +474,16 @@ def harvest_job(
                 except (OSError, ValueError):
                     pass
         metrics = ptb_results._read_json(result_dir / "metrics.json")
+        try:
+            status["official_evidence_retention"] = ptb_evidence_retention.preserve_official_evidence(
+                result_dir, out_dir
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            # Retention failure is observable, but must not suppress the original
+            # scientific verdict, judge flags, placement or failed-job evidence.
+            status["official_evidence_retention"] = {
+                "state": "failed", "errors": [{"error": str(exc)}]
+            }
         if isinstance(metrics.get("accuracy"), (int, float)):
             status["accuracy"] = metrics["accuracy"]
             status["stderr"] = metrics.get("stderr")
