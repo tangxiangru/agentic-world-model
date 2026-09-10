@@ -1,5 +1,7 @@
 # Proposed 1,000-combination study: can recipe + serving predict performance?
 
+Update: the original design below is preserved. The additional 2,000-combination plan is now packaged alongside it in [EXTENSION_2K.md](../../experiments/eval_matrix_1k/EXTENSION_2K.md). Use [experiment_matrix_all_3k.jsonl](../../experiments/eval_matrix_1k/experiment_matrix_all_3k.jsonl) and [execution_plan.json](../../experiments/eval_matrix_1k/execution_plan.json) for the full 3,000; do not concatenate the combined view with its original or extension-only views.
+
 Status: **concrete proposal, not launch-ready or authorized to execute**. The accompanying list contains 1,000 named `exp_id`s and seven explicit generation-policy files. No model evaluations or training runs were launched. Existing `wm_exp_designs.md` is unchanged.
 
 The supporting files are now tracked in the [portable execution bundle](../../experiments/eval_matrix_1k/README.md). Start with its [execution-agent handoff](../../experiments/eval_matrix_1k/AGENT_HANDOFF.md): static validation and small-asset fetching are implemented; the GPU executor still needs implementation and preflight before launching the 100-combination pilot.

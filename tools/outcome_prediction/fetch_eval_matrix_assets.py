@@ -21,7 +21,17 @@ EVAL_PREFIX = "rescore10/eval/"
 RUNTIME_README = "rescore10/trajectories/README.md"
 DEFAULT_BUNDLE = Path(__file__).resolve().parents[2] / "experiments/eval_matrix_1k"
 PHASES = {"pilot": "1_operational_pilot", "development": "2_development_core",
-          "extensions": "3_diagnostic_extensions", "test": "4_locked_test"}
+          "extensions": "3_diagnostic_extensions", "test": "4_locked_test",
+          "extension-pilot": "5_extension_pilot",
+          "extension-development": "6_extension_development",
+          "extension-test": "7_extension_locked_test"}
+PHASE_SOURCES = {name: (f"phases/{filename}.jsonl",) for name, filename in PHASES.items()}
+PHASE_SOURCES.update({
+    "all": ("experiment_matrix.jsonl",),  # Backwards compatible: original 1,000 only.
+    "combined-all": ("experiment_matrix_all_3k.jsonl",),
+    "extension-all": ("experiment_matrix_extension_2k.jsonl",),
+    "combined-pilot": ("phases/1_operational_pilot.jsonl", "phases/5_extension_pilot.jsonl"),
+})
 MAX_BYTES = 64 * 1024 * 1024
 
 
@@ -60,16 +70,21 @@ def known_hashes(protocol):
 
 def build_plan(bundle=DEFAULT_BUNDLE, phase="pilot"):
     bundle = Path(bundle).resolve()
-    if phase not in {*PHASES, "all"}:
+    if phase not in PHASE_SOURCES:
         raise AssetError("Unknown phase")
-    source = "experiment_matrix.jsonl" if phase == "all" else f"phases/{PHASES[phase]}.jsonl"
-    rows = [json.loads(line) for line in (bundle / source).read_text().splitlines() if line.strip()]
+    sources, rows = PHASE_SOURCES[phase], []
+    for source in sources:
+        if not (bundle / source).is_file():
+            raise AssetError(f"Required phase manifest missing: {source}")
+        rows.extend(json.loads(line) for line in (bundle / source).read_text().splitlines()
+                    if line.strip())
     ids = sorted({row["checkpoint_id"] for row in rows})
     if not ids or any(not isinstance(x, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", x)
                       for x in ids):
         raise AssetError("Invalid or empty checkpoint selection")
     protocol = json.loads((bundle / "protocol.json").read_text())
     return {"schema": "eval-matrix-asset-plan-v1", "bundle": str(bundle), "phase": phase,
+            "manifest_sources": list(sources), "manifest_row_count": len(rows),
             "repo_id": DATASET, "repo_type": "dataset", "eval_revision": EVAL_REV,
             "metadata_revision": META_REV, "eval_prefix": EVAL_PREFIX,
             "runtime_readme": RUNTIME_README, "expected_sha256": known_hashes(protocol),
@@ -161,7 +176,7 @@ def fetch_assets(plan, out, *, api=None, downloader=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, default=DEFAULT_BUNDLE)
-    parser.add_argument("--phase", choices=[*PHASES, "all"], default="pilot")
+    parser.add_argument("--phase", choices=list(PHASE_SOURCES), default="pilot")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--dry-run", action="store_true", help="Print the pinned plan; no network, auth, or writes")
     args = parser.parse_args(argv)

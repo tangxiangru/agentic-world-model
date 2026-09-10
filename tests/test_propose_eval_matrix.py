@@ -100,7 +100,11 @@ def test_published_splits_and_phase_partition(artifacts):
     pilot = [j for j in jobs if j["phase"] == "1_operational_pilot"]
     assert len(pilot) == 100
     assert {j["generation_config_id"] for j in pilot} == {"G01", "G02", "A01", "A02", "A03", "A04", "A05"}
-    phase_jobs = [j for p in sorted((out / "phases").glob("*.jsonl")) for j in M.read_jsonl(p)]
+    # The shared directory also contains the additive 2K phase files. This test
+    # validates only the original matrix's partition; the extension has its own
+    # combined-plan tests, and runners must not glob all files as original work.
+    phase_jobs = [j for phase in sorted({row["phase"] for row in jobs})
+                  for j in M.read_jsonl(out / "phases" / f"{phase}.jsonl")]
     assert sorted(j["exp_id"] for j in phase_jobs) == sorted(j["exp_id"] for j in jobs)
 
 
