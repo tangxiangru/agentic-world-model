@@ -96,9 +96,16 @@ def main():
                             fp = xp.parent / f["materialized"]
                             if not fp.exists() or hashlib.sha256(fp.read_bytes()).hexdigest() != f.get("sha256"):
                                 errs.append(f"file_hash:{f['path']}")
-                if rec.get("steps") and rec["archived_from_dir"] and not any(
-                        rec["archived_from_dir"] in o for o in rec["steps"][-1].get("outputs", [])):
-                    errs.append("chain_does_not_end_at_archived_dir")
+                # The chain must name the archived directory: as an output of some step, or as the
+                # input of a final select/copy step whose output is the archive itself.
+                adir = rec.get("archived_from_dir")
+                if rec.get("steps") and adir:
+                    last = rec["steps"][-1]
+                    named = any(adir in o for st in rec["steps"] for o in st.get("outputs", [])) or \
+                        adir in (last.get("inputs", {}).get("parent_model", {}) or {}).get("ref", "") or \
+                        any(adir in x for x in last.get("inputs", {}).get("other_inputs", []))
+                    if not named:
+                        errs.append("chain_does_not_name_archived_dir")
                 leak = []
                 for step in rec.get("steps", []):
                     for field in (step.get("launch", {}).get("command", ""), step.get("notes", "")):
@@ -116,8 +123,10 @@ def main():
         if ex["track"] == "matrix" and ex["S"].get("s_resolution") != "server_verified":
             problems.append("matrix_without_verified_s")
         per_example[ex["example_id"]] = {"status": ex["status"], "problems": problems, "warnings": warnings}
+        # Excluded examples carry their reasons by design; only problems on eligible ones are failures.
         for p in problems:
-            hard[p.split(":")[0] if p.startswith("x:") else p] += 1
+            key = p.split(":")[0] if p.startswith("x:") else p
+            (hard if ex["status"] == "eligible" else soft)[("eligible:" if ex["status"] == "eligible" else "excluded:") + key] += 1
         for w in warnings:
             soft[w.split(":")[0]] += 1
     # matrix locked sessions all in test

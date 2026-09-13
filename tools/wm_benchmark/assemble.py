@@ -95,9 +95,13 @@ def main(argv):
         x_dir = bench / "x" / cid
         x_dir.mkdir(parents=True, exist_ok=True)
         errs += materialize(rec, cell, x_dir, tl / "_files", path.parent)
-        entry_missing = [s["step_id"] for s in rec.get("steps", [])
-                         if not any(f.get("role") == "entrypoint" and not f.get("source", "").startswith("unavailable")
-                                    for f in s.get("files", []))]
+        # Steps that run the scientist's own code must carry its launch-time content; copies,
+        # checkpoint selection, base-model downloads and plain config edits need not.
+        CODE_KINDS = {"train", "weight_average", "convert"}   # a data_build may be a shell one-liner
+        entry_missing = [s["step_id"] for s in rec.get("steps", []) if s.get("kind") in CODE_KINDS
+                         and not any(f.get("role") in ("entrypoint", "inline_script")
+                                     and not f.get("source", "").startswith("unavailable")
+                                     for f in s.get("files", []))]
         if entry_missing:
             errs.append("steps_without_available_entrypoint:" + ",".join(entry_missing))
         ver = bench / "x_verify" / cell / f"{cid}.json"
@@ -105,18 +109,61 @@ def main(argv):
         rec["_verification"] = {"verdict": verdict, "path": str(ver.relative_to(bench)) if ver.exists() else None}
         (x_dir / "launch_record.json").write_text(json.dumps(rec, indent=1))
         records[cid], problems[cid] = rec, errs
-    # splits: session level
-    sessions = {}
+    # splits: session level, with sessions that share any weights hash joined into one group
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        parent[find(a)] = find(b)
+
+    by_hash = {}
+    locked = set()
     for row in labels:
         s = row["session_id"]
+        find(s)
         if row.get("matrix_split") == "locked_session_test":
-            sessions[s] = "test"
+            locked.add(s)
+        h = (row.get("weights") or {}).get("weights_sha256")
+        if h:
+            if h in by_hash and by_hash[h] != s:
+                union(s, by_hash[h])
+            by_hash.setdefault(h, s)
+    members = defaultdict(set)
+    for s in list(parent):
+        members[find(s)].add(s)
+    sessions, groups = {}, {}
+    for root, mem in members.items():
+        gid = "group-" + hashlib.sha256(("|".join(sorted(mem))).encode()).hexdigest()[:12]
+        if mem & locked:
+            split = "test"
         else:
-            sessions.setdefault(s, None)
-    for s, v in sessions.items():
-        if v is None:
-            bucket = int(hashlib.sha256((SALT + s).encode()).hexdigest()[:8], 16) % 5
-            sessions[s] = "validation" if bucket == 0 else "train"
+            split = "validation" if int(hashlib.sha256((SALT + gid).encode()).hexdigest()[:8], 16) % 5 == 0 else "train"
+        for s in mem:
+            sessions[s] = split
+            groups[s] = gid
+    multi = [sorted(m) for m in members.values() if len(m) > 1]
+    # Weight identity: the matrix preflight hashed every archived checkpoint's shards. Two
+    # checkpoint ids with the same weights_sha256 are the same weights (a card archived twice, or
+    # two cards archiving one directory); under the same serving config the later one is an alias.
+    weights_of = {}
+    for row in labels:
+        h = (row.get("weights") or {}).get("weights_sha256")
+        if h:
+            weights_of[row["checkpoint_id"]] = h
+    # Alias = same weights + same S *within one session* (one directory archived under two cards).
+    # The same weights produced independently in two sessions (same recipe, same seed) stay two
+    # examples, as the spec says, but their sessions must fall in the same split.
+    canonical = {}
+    for row in sorted(labels, key=lambda r: r["checkpoint_id"]):
+        h = weights_of.get(row["checkpoint_id"])
+        if h:
+            canonical.setdefault((row["session_id"], h, row["serving_id"], row["benchmark"]), row["checkpoint_id"])
     examples, status = [], Counter()
     for row in labels:
         cid = row["checkpoint_id"]
@@ -132,15 +179,22 @@ def main(argv):
                 reasons.append("x:verifier_needs_fix")
             if rec.get("confidence") == "low":
                 reasons.append("x:low_confidence")
+        h = weights_of.get(cid)
+        alias_of = None
+        ckey = (row["session_id"], h, row["serving_id"], row["benchmark"])
+        if h and canonical.get(ckey) not in (None, cid):
+            alias_of = f"{canonical[ckey]}@{row['serving_id']}"
+            reasons.append(f"alias:{alias_of}")
         zref = bench / "z" / row["example_id"] / "log_ref.json"
         z = json.loads(zref.read_text()) if zref.exists() else None
         if z is not None and not z.get("log_is_record_of_label"):
             reasons.append("z:log_not_record_of_label")
         ex = {
             "example_id": row["example_id"], "checkpoint_id": cid, "serving_id": row["serving_id"],
-            "session_id": row["session_id"], "split": sessions[row["session_id"]],
+            "session_id": row["session_id"], "split": sessions[row["session_id"]], "split_group": groups[row["session_id"]],
             "benchmark": row["benchmark"], "base_model": row["base_model"], "track": row["track"],
-            "status": "eligible" if not reasons else "excluded", "reasons": reasons,
+            "status": "eligible" if not reasons else ("alias" if alias_of and all(r.startswith("alias:") for r in reasons) else "excluded"),
+            "reasons": reasons, "alias_of": alias_of, "weights_sha256": h,
             "X": {"launch_record": f"x/{cid}/launch_record.json" if rec else None,
                   "chain_steps": len(rec["steps"]) if rec else None,
                   "confidence": rec.get("confidence") if rec else None,
@@ -155,9 +209,12 @@ def main(argv):
     with (bench / "examples.jsonl").open("w") as fh:
         for ex in examples:
             fh.write(json.dumps(ex, sort_keys=True) + "\n")
-    (bench / "splits.json").write_text(json.dumps({"salt": SALT, "rule": "matrix locked_session_test sessions -> test; others sha256(salt+session)%5==0 -> validation else train",
-                                                   "sessions": sessions}, indent=1))
-    reason_counts = Counter(r.split(":")[0] + ":" + r.split(":")[1] if ":" in r else r for ex in examples for r in ex["reasons"])
+    (bench / "splits.json").write_text(json.dumps({"salt": SALT,
+                                                   "rule": "sessions sharing a weights hash form one group; a group containing a matrix locked_session_test session -> test; "
+                                                           "otherwise sha256(salt+group_id)%5==0 -> validation else train",
+                                                   "multi_session_groups": multi, "sessions": sessions, "groups": groups}, indent=1))
+    reason_counts = Counter("alias" if r.startswith("alias:") else (r.split(":")[0] + ":" + r.split(":")[1] if ":" in r else r)
+                            for ex in examples for r in ex["reasons"])
     summary = {"examples": len(examples), "by_track_status": {f"{k[0]}/{k[1]}": v for k, v in sorted(status.items())},
                "checkpoints_with_record": len(records), "records_with_problems": sum(1 for v in problems.values() if v),
                "reasons": dict(reason_counts.most_common()),
