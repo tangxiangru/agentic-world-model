@@ -12,6 +12,11 @@ Writes <benchmark_dir>/z/<example_id>/samples.jsonl.gz  one record per (question
            `log_is_record_of_label` = every scored sample matches per_problem and nothing is missing.
 
 Z is label-side data: nothing written here is ever a predictor input.
+
+Relationship to `normalize_logs.py` (kept alongside, unchanged): that script does the same job
+for the earlier `cc2ac9d884a7` mirror and the rescore10 track only, driven by a list of ids.
+This one is driven by `labels.jsonl`, covers both the native and the controlled-matrix tracks at
+the `07132f15e3c6` revision, and additionally records the completion hash/length per sample.
 """
 from __future__ import annotations
 
