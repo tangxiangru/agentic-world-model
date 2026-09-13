@@ -68,6 +68,8 @@ own description; the benchmark reads what was actually launched from the trace. 
 | D5 | The 32 non-recorder cells (`c0`, `c123`) have no archived checkpoints and no ten-run labels; they contribute nothing. | No Y. |
 | D6 | **Z must be the record of Y.** Step 5 re-scores every Inspect log and compares each (question, run) with the result file's `per_problem`; an example whose log disagrees is excluded (`z:log_not_record_of_label`) even though its Y is valid. All 4,182 logs (2026-09-13): 4,172 are exact records; 10 are not, in two patterns. (i) Six native logs (`r0-24-exp-03`, `r0-26-exp-07`, `r0-27-exp-02`, `r0-27-exp-03`, `r0-28-exp-02`, `r0-28-exp-04`) all created 2026-09-06 19:25 UTC with Inspect status `started` and 10,550–11,060 of 13,190 samples: an unfinished batch whose completed rerun (results 20:37–20:52) produced the label, but whose final log was not the one uploaded. (ii) Four matrix `1_operational_pilot` cells (`gsm2-r0-26-exp-03@{G01,G02}`, `r0-29-exp-02@{G01,G02}`): complete `success` logs created 02:30–03:20 UTC on 2026-09-10 against result files from 05:23–06:19, i.e. the pilot was run twice and the first pass's logs were uploaded; per-sample agreement is 97–98 % for the greedy policy (batching nondeterminism) and 62–72 % for sampling. All ten are excluded; their labels remain in `labels.jsonl` for anyone who can supply the matching log. | The spec preserves Z so other targets can be derived from it; a Z that is not the evidence behind Y would silently break that. |
 | D7 | **Weight identity, aliases, split groups.** The matrix preflight hashed every archived checkpoint's shards (`weights_sha256`). Two checkpoint ids with equal weights *in one session* under the same S are one example: the later id becomes `status: alias` with `alias_of` (one directory archived under several cards: `aime-r0-30-exp-{02,05,07}`, `gsm2-r0-03-exp-{02,03}`, `gsm2-r0-21-exp-{01,03}`). Equal weights in *different* sessions (`r0-01-exp-01` and `r0-09-exp-01`: same recipe and seed, bit-identical result) stay two examples, as the spec says of independent re-executions, but their sessions are joined into one split group so they cannot straddle train and test. | Spec: "a record that re-evaluates an existing checkpoint without changing weights or S is an alias"; "independent re-executions of the same C are separate examples". |
+| D8 | **File-entry conventions, resolved deterministically at assembly.** (i) An inline script that *is* the launch command (`python -c`, `python - <<EOF`, a shell one-liner) needs no copy: `assemble.py` materializes `launch.command`. An inline script cited at another event (a data build consumed by a later launch) is materialized from that event's Bash command in the timeline. (ii) `templates/*.jinja` are PostTrainBench's own files: every copy recovered from a trace hashes to `third_party/PostTrainBench/src/eval/templates/<name>` (the three that differed had lost a trailing newline in `cat` output; no scientist edited a template), so they resolve from the submodule. (iii) Where an extractor replaced a heredoc body in `launch.command` with a pointer to the saved file, or kept only the launching part of a compound command, assembly restores the verbatim command from the trace (the agent's text is kept as `command_as_recorded`), except when the command references a card yaml — those stay redacted. (iv) Card yamls are never `files` entries. | The record must be the command as issued and every file it reads, without the assembler guessing; each rule is a deterministic lookup with the evidence named in `materialized_from`. |
+| D9 | A target checkpoint with ten-run labels but **no submit event in its trace** stays without a record and is excluded as `x:no_launch_record`; the extractor does not invent an archive mapping. Found once: `r0-04-exp-10`, whose card was written and submitted from inside a Python heredoc (seq 242) that `prepare_targets.py` did not recognise as a submit — the repair round re-extracts it from that event. | No evidence, no X. |
 
 ## 4. Pipeline
 
@@ -80,7 +82,8 @@ Each step is a script under `tools/wm_benchmark/`; outputs live under `data/benc
 | 2 labels | `build_labels.py` | matrix + rescore10 results, policies, checkpoints_meta | `data/benchmark/labels.jsonl`, `labels_summary.json` | Y recomputed from `per_problem`; mismatches are listed, not fixed. Result 2026-09-12: 4,182 rows; 3,000 matrix valid; 1,039 native valid, 143 native invalid (no archived `config.json`/`generation_config.json`: 97 `opus47max-r0`, 46 `opus5max-r0`); 573 native rows carry `sample_errors_unknown_until_log_checked` (older result files lack the field; step 5 settles it) |
 | 3a targets | `prepare_targets.py` | labels + timeline | `data/benchmark/targets/<cell>.json` | per cell: the labeled checkpoints, their submit events, candidate launches, the yaml's `output_checkpoint` (hints only). 124 cells, 582 checkpoints |
 | 3 launches | subagent extraction over `data/timeline/` | timeline | `data/benchmark/x/<checkpoint>/launch.json` (+ verified files) | see §5 |
-| 4 assemble | `assemble.py` | steps 2–3 | `data/benchmark/examples.jsonl`, `x/`, `splits.json` | `verify.py` |
+| 3b check | `check_records.py` | `x_raw/` + timeline | findings per record (stdout, `--json`) | deterministic tests only: command vs trace event, archive evidence, fs@seq versions and launch-time currency, superseded order, parent links, chain end, card yamls, schema. Run before and after every agent round. |
+| 4 assemble | `assemble.py` | steps 2–3 | `data/benchmark/examples.jsonl`, `x/`, `splits.json` | `verify.py`; applies D8 (every materialized file says `materialized_from`; `_commands_restored_from_trace` counts D8-iii per record) |
 | 5 Z | `normalize_logs.py` | Inspect logs | `data/benchmark/z/<example>/samples.jsonl.gz` | agreement with `per_problem` |
 
 ## 5. X extraction from traces (step 3)
@@ -133,6 +136,27 @@ any `seq`, and run
 `data/timeline/_files/<sha256>` or `x/<checkpoint_id>/files/`. The verifier's verdict for the
 same checkpoint is at `x_verify/<cell>/<checkpoint_id>.json`.
 
+**Run 1 (2026-09-12/13, Fable agents, session `a920c4ff`).** 24 cells / 106 records extracted before the
+account's five-hour session limit stopped 468 of 525 agents (every failure was the 429, none a task
+error); no verifier ever ran. Five extractors read "overwrite anything there" as licence to `rm -rf`
+their cell directory before rewriting it, briefly destroying finished records (all rewritten before
+the stop; snapshot `x_raw.bak-1789278179`); the prompts now forbid deletion.
+
+**Run 2 (2026-09-13, Opus agents, workflow `wf_211cfcb9-d3a`, this session).** Same pipeline, agents
+`model: opus`, effort high, 16 in flight; the 24 run-1 cells skip extraction and go straight to
+verification. All 100 remaining cells extracted (475 records, 0 failures); verification was then cut
+by the session limit at 27 cells and resumed at 11:10 UTC. A pipeline quirk worth knowing: all 100
+extract calls are enqueued before any verify call, so verification effectively starts once extraction
+drains. Review by the orchestrating (Fable) agent while the run proceeded — three records read against
+the trace by hand, `check_records.py` over every record, `assemble.py` over the partial set — found no
+wrong archive mapping, launch, or chain in the Opus records; what it found were conventions
+(D8) and four agent defects: mangled `content_file` paths in `aime-r0-10` (caught by the verifier,
+repaired), card yamls under `files` in `aime-r0-11` (removed by hand, noted in `revisions`), the pilot's
+`r0-29` records predating `archive_submit_seq`, and free text in `produced_by_step` in `aime-r0-14`.
+Verifiers examine 21–67 seqs per record and write low-severity findings on cosmetic errors (a wrong
+smoke-test directory name in a note; `HF_HOME` listed as a command-line env when it is ambient), which
+is the depth wanted.
+
 **Pilot (2026-09-12).** Cells `r0-29` (5 checkpoints, GSM8K, incl. two weight soups) and
 `aime-r0-01` (5 checkpoints, AIME, incl. a two-parent merge) were extracted first and read by
 hand; all ten records validate against the schema. The pilot is what produced the
@@ -152,4 +176,6 @@ _Updated as steps complete._
 | matrix cells (examples with verified S) | 3,000 over 516 checkpoints | |
 | native runs on trace-bearing checkpoints | 582 | |
 | held-out sessions (matrix `locked_session_test`) | 40 of 124 | |
+| launch records (step 3) | 581 of 582 target checkpoints, all 124 cells (`r0-04-exp-10`: D9) | 2026-09-13 |
+| verified (step 3, verifier verdicts) | _in progress_ | 2026-09-13 |
 | Z normalized (step 5) | 4,182 of 4,182 examples; 4,172 logs are the record of their label, 10 excluded (D6) | 2026-09-13 |
