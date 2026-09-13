@@ -86,6 +86,10 @@ For each target checkpoint, one JSON file
   the directory held at the closing submit. Say which launch that was and note the overwrite.
 - If a target's checkpoint was produced by averaging or copying other directories, those
   directories' own chains are part of this record (as earlier steps), back to the base model.
-- Write the JSON files yourself (Write tool). When done, return a short summary: for each
-  checkpoint, `archived_from_dir`, the producing launch seq, the number of steps, confidence,
-  and open issues. Nothing else.
+- Write the JSON files yourself (Write tool). Writing a file that already exists replaces it,
+  which is all the replacing that is wanted. **Never delete anything.** Do not `rm`, `rm -rf`,
+  `mv` or otherwise clear your cell's directory, `files/`, or any record already in it, not even
+  to "start clean": a record you delete and then fail to rewrite is lost work. If a stale record
+  is there for a checkpoint not in your target list, leave it and say so in your summary.
+- When done, return a short summary: for each checkpoint, `archived_from_dir`, the producing
+  launch seq, the number of steps, confidence, and open issues. Nothing else.

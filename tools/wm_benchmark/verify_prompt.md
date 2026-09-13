@@ -39,7 +39,8 @@ For every record, check and report on each of these, citing seqs:
 7. **Leakage.** Does the record contain any score, accuracy, or the scientist's conclusion?
    (It must not.) Card-yaml heredocs quoted inside a `command` must be redacted.
 
-Write your verdicts to `/home/kalorona/awm-data/benchmark/x_verify/<cell>/<checkpoint_id>.json`:
+Never delete anything: do not `rm` or clear any directory, and do not modify the extractor's
+records; you only add verdict files. Write your verdicts to `/home/kalorona/awm-data/benchmark/x_verify/<cell>/<checkpoint_id>.json`:
 
 ```json
 {"checkpoint_id": "...", "verdict": "confirmed" | "needs_fix" | "cannot_verify",
