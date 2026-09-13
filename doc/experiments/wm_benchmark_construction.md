@@ -12,7 +12,10 @@ Status: **in construction** (started 2026-09-12).
 All inputs come from one pinned revision of the private dataset
 `JerrrrryL/awm-gsm8k-trajectories` (revision `07132f15e3c6cc6714ae84835b1896d734c5d54a`,
 2026-09-12), mirrored to `data/hf-mirror/` (gitignored; `data/` is a symlink to
-`/home/kalorona/awm-data` on the CPU box). Nothing is read from anywhere else.
+`/home/kalorona/awm-data` on the CPU box). Nothing is read from anywhere else. The mirror is
+complete as of 2026-09-13: 25,177 files, every one size-checked against the revision's tree
+(`data/hf_tree_07132f15.txt`); 18 files that failed with HF-CDN connection errors on the first
+pass (`data/mirror_fetch.log`) were refetched (`data/mirror_fetch_retry.log`).
 
 | HF path | what it is | role |
 |---|---|---|
@@ -63,7 +66,7 @@ own description; the benchmark reads what was actually launched from the trace. 
 | D3 | Checkpoints whose session trace is not on HF (arms `opus5max-r0`, `opus48max-r0`, `opus47max-r0`, `glm52-r0`: 538 checkpoints with ten-run labels) are listed as *labels awaiting X* and excluded from the release until their traces are available. | X cannot be constructed without the trace. |
 | D4 | Dojo-produced checkpoints (`abgsm8k-*`, 62, Qwen3 on GSM8K) are deferred to a second pass: their X lives in `dojo_ab_gsm8k/**/artifacts/step*/solution.py`, a different trajectory format. | Same spec, different extractor. |
 | D5 | The 32 non-recorder cells (`c0`, `c123`) have no archived checkpoints and no ten-run labels; they contribute nothing. | No Y. |
-| D6 | **Z must be the record of Y.** Step 5 re-scores every Inspect log and compares each (question, run) with the result file's `per_problem`; an example whose log disagrees is excluded (`z:log_not_record_of_label`) even though its Y is valid. First case found: `gsm2-r0-26-exp-03@G01`, whose uploaded log was created 3.5 h before the result file, same policy and nearly the same mean but only 62 % per-sample agreement, i.e. a first attempt whose rerun produced the label. | The spec preserves Z so other targets can be derived from it; a Z that is not the evidence behind Y would silently break that. |
+| D6 | **Z must be the record of Y.** Step 5 re-scores every Inspect log and compares each (question, run) with the result file's `per_problem`; an example whose log disagrees is excluded (`z:log_not_record_of_label`) even though its Y is valid. All 4,182 logs (2026-09-13): 4,172 are exact records; 10 are not, in two patterns. (i) Six native logs (`r0-24-exp-03`, `r0-26-exp-07`, `r0-27-exp-02`, `r0-27-exp-03`, `r0-28-exp-02`, `r0-28-exp-04`) all created 2026-09-06 19:25 UTC with Inspect status `started` and 10,550–11,060 of 13,190 samples: an unfinished batch whose completed rerun (results 20:37–20:52) produced the label, but whose final log was not the one uploaded. (ii) Four matrix `1_operational_pilot` cells (`gsm2-r0-26-exp-03@{G01,G02}`, `r0-29-exp-02@{G01,G02}`): complete `success` logs created 02:30–03:20 UTC on 2026-09-10 against result files from 05:23–06:19, i.e. the pilot was run twice and the first pass's logs were uploaded; per-sample agreement is 97–98 % for the greedy policy (batching nondeterminism) and 62–72 % for sampling. All ten are excluded; their labels remain in `labels.jsonl` for anyone who can supply the matching log. | The spec preserves Z so other targets can be derived from it; a Z that is not the evidence behind Y would silently break that. |
 | D7 | **Weight identity, aliases, split groups.** The matrix preflight hashed every archived checkpoint's shards (`weights_sha256`). Two checkpoint ids with equal weights *in one session* under the same S are one example: the later id becomes `status: alias` with `alias_of` (one directory archived under several cards: `aime-r0-30-exp-{02,05,07}`, `gsm2-r0-03-exp-{02,03}`, `gsm2-r0-21-exp-{01,03}`). Equal weights in *different* sessions (`r0-01-exp-01` and `r0-09-exp-01`: same recipe and seed, bit-identical result) stay two examples, as the spec says of independent re-executions, but their sessions are joined into one split group so they cannot straddle train and test. | Spec: "a record that re-evaluates an existing checkpoint without changing weights or S is an alias"; "independent re-executions of the same C are separate examples". |
 
 ## 4. Pipeline
@@ -149,3 +152,4 @@ _Updated as steps complete._
 | matrix cells (examples with verified S) | 3,000 over 516 checkpoints | |
 | native runs on trace-bearing checkpoints | 582 | |
 | held-out sessions (matrix `locked_session_test`) | 40 of 124 | |
+| Z normalized (step 5) | 4,182 of 4,182 examples; 4,172 logs are the record of their label, 10 excluded (D6) | 2026-09-13 |
