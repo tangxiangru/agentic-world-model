@@ -62,7 +62,42 @@ def _ptb_template(path: str):
     return None
 
 
-def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: Path) -> list[str]:
+_CMD_CACHE: dict = {}
+
+
+def trace_commands(tl: Path, cell: str) -> dict:
+    """seq -> Bash command text, from the cell's timeline (cached per cell)."""
+    if cell not in _CMD_CACHE:
+        cmds = {}
+        p = tl / cell / "events.jsonl"
+        if p.exists():
+            for l in p.open():
+                e = json.loads(l)
+                if e.get("kind") == "tool_use" and e.get("tool") == "Bash":
+                    cmds[e["seq"]] = e.get("command") or ""
+        _CMD_CACHE[cell] = cmds
+    return _CMD_CACHE[cell]
+
+
+def restore_commands(record: dict, cmds: dict) -> int:
+    """The extractors sometimes replaced a heredoc body in launch.command with a pointer to the
+    saved file, or kept only the launching part of a compound command. The record's command must
+    be the command as issued: restore it from the trace unless it references a card yaml (those
+    the extractor redacted on purpose, and the redacted text is kept). Returns the count restored."""
+    n = 0
+    for st in record.get("steps", []):
+        L = st.get("launch") or {}
+        seq, rc = L.get("seq"), (L.get("command") or "")
+        tc = cmds.get(seq)
+        if tc is None or tc.strip() == rc.strip() or "memory/cards/" in tc or "<<card yaml redacted>>" in rc:
+            continue
+        L["command_as_recorded"] = rc
+        L["command"] = tc
+        n += 1
+    return n
+
+
+def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: Path, cmds: dict = None) -> list[str]:
     """Copy every cited file's launch-time content next to the record; return problems."""
     problems = []
     for step in record.get("steps", []):
@@ -91,6 +126,15 @@ def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: 
                 dest.write_text(step["launch"]["command"])
                 f["materialized"] = str(dest.relative_to(x_dir))
                 f["materialized_from"] = "launch.command"
+                continue
+            # An inline script in another event (a data build at seq N consumed by the launch at
+            # seq M > N) whose text was not copied: its content is the Bash command at N.
+            if found is None and m and cmds and int(m.group(2)) in cmds and f.get("role") in ("inline_script", "data_builder", "config", "helper"):
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest = dest.with_name(dest.name + f".command@{m.group(2)}.txt")
+                dest.write_text(cmds[int(m.group(2))])
+                f["materialized"] = str(dest.relative_to(x_dir))
+                f["materialized_from"] = f"timeline:{cell}:events.jsonl:seq={m.group(2)}"
                 continue
             ptb = _ptb_template(f["path"]) if found is None or f.get("sha256") else None
             if ptb is not None:
@@ -134,7 +178,9 @@ def main(argv):
         errs = validate_record(rec, schema)
         x_dir = bench / "x" / cid
         x_dir.mkdir(parents=True, exist_ok=True)
-        errs += materialize(rec, cell, x_dir, tl / "_files", path.parent)
+        cmds = trace_commands(tl, cell)
+        rec["_commands_restored_from_trace"] = restore_commands(rec, cmds)
+        errs += materialize(rec, cell, x_dir, tl / "_files", path.parent, cmds)
         # Steps that run the scientist's own code must carry its launch-time content; copies,
         # checkpoint selection, base-model downloads and plain config edits need not.
         CODE_KINDS = {"train", "weight_average", "convert"}   # a data_build may be a shell one-liner
