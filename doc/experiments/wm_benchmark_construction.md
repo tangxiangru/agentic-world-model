@@ -160,15 +160,15 @@ Verifiers examine 21–67 seqs per record and write low-severity findings on cos
 smoke-test directory name in a note; `HF_HOME` listed as a command-line env when it is ambient), which
 is the depth wanted.
 
-**Outcome of the agent rounds (2026-09-13).** 124/124 cells verified: 582 records, 581 `confirmed`
-after repair, 0 `cannot_verify`. Eight cells went through repair + re-verification (`aime-r0-10`
+**Outcome of the agent rounds (2026-09-13).** 124/124 cells verified: 582 records, all `confirmed`
+after repair and review, 0 `cannot_verify`. Eight cells went through repair + re-verification (`aime-r0-10`
 mangled `content_file` paths; `gsm2-r0-10`, `aime-r0-28`, `aime2-r0-08`, `aime2-r0-12`, `r0-09` file-version
 and chain details; `r0-29` pilot records without `archive_submit_seq`; `r0-04`, where the verifier
 flagged the missing `r0-04-exp-10` and the repair extracted it from the heredoc at seq 242, D9). The
 reviewing agent applied four fixes by hand, each recorded in the record's `revisions` with the
 evidence: card yamls removed from `files` (`aime-r0-11`), one-id `produced_by_step` (`aime-r0-14`),
 the second soup input of `r0-29-exp-05` moved into `additional_parents` (the round-2 finding; a
-third verifier round checks it), and `convert_data.py` re-labelled `entrypoint` on the convert step of
+third verifier round re-derived the step from `make_soup.py`'s argv handling and confirmed it), and `convert_data.py` re-labelled `entrypoint` on the convert step of
 `aime2-r0-32-exp-01`. `check_records.py` over the final records reports no defect a program can
 detect; its remaining lines are documentation entries (annotated superseded versions, a recorder-copy
 output) and the D8 materializations it does not model.
@@ -193,8 +193,8 @@ _Updated as steps complete._
 | native runs on trace-bearing checkpoints | 582 | |
 | held-out sessions (matrix `locked_session_test`) | 40 of 124 | |
 | launch records (step 3) | 582 of 582 target checkpoints, all 124 cells (`r0-04-exp-10` recovered in repair, D9) | 2026-09-13 |
-| verified (step 3, verifier verdicts) | 124 of 124 cells; 581 confirmed, 1 (`r0-29-exp-05`) fixed by review and under third-round verification | 2026-09-13 |
-| **eligible examples (step 4)** | **3,538** = 2,967 matrix + 571 native, over 582 checkpoints; 1,879 GSM8K + 1,659 AIME; train 1,837 / validation 492 / test 1,209; 28 aliases (D7) | 2026-09-13 |
-| excluded examples | 600 without a trace-bearing checkpoint (`x:no_launch_record`, D3 arms and `r0-04-exp-10`'s label rows are not among them), 143 native rows without archived configs (D1a), 10 whose log is not the record of the label (D6), 6 pending the `r0-29-exp-05` verdict | 2026-09-13 |
-| `verify.py` | 4,182 examples checked, no hard failures, 3,538 eligible clean | 2026-09-13 |
+| verified (step 3, verifier verdicts) | 124 of 124 cells; **582 of 582 records confirmed** (`r0-29-exp-05` fixed by review, confirmed in a third verifier round, `wf_67227116-5ad`) | 2026-09-13 |
+| **eligible examples (step 4)** | **3,544** = 2,972 matrix + 572 native, over 582 checkpoints; 1,885 GSM8K + 1,659 AIME; train 1,843 / validation 492 / test 1,209; 28 aliases (D7) | 2026-09-13 |
+| excluded examples | 600 label rows of the 600 checkpoints without a session trace (`x:no_launch_record`: 538 in the D3 arms, 62 dojo, D4), 143 native rows without archived configs (D1a), 10 whose log is not the record of the label (D6); nothing is excluded for a reason on the X side | 2026-09-13 |
+| `verify.py` | 4,182 examples checked, no hard failures, 3,544 eligible clean | 2026-09-13 |
 | Z normalized (step 5) | 4,182 of 4,182 examples; 4,172 logs are the record of their label, 10 excluded (D6) | 2026-09-13 |
