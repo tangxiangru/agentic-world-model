@@ -5,7 +5,10 @@ This is the working record of how the benchmark defined in [wm_benchmark_spec.md
 dataset. Every step names its inputs, its code, its outputs and how to check them by hand. It is
 appended to as construction proceeds; counts are updated in place and dated.
 
-Status: **in construction** (started 2026-09-12).
+Status: **assembled and verified** (started 2026-09-12; X extraction and verification complete
+2026-09-13; `verify.py` passes with no hard failures). Release files: `data/benchmark/examples.jsonl`
+(every example with status and reasons), `splits.json`, `x/<checkpoint>/` (launch record + materialized
+files + verdict pointer), `z/<example>/`, `labels.jsonl`, `verify_report.json`.
 
 ## 1. Sources
 
@@ -68,7 +71,7 @@ own description; the benchmark reads what was actually launched from the trace. 
 | D5 | The 32 non-recorder cells (`c0`, `c123`) have no archived checkpoints and no ten-run labels; they contribute nothing. | No Y. |
 | D6 | **Z must be the record of Y.** Step 5 re-scores every Inspect log and compares each (question, run) with the result file's `per_problem`; an example whose log disagrees is excluded (`z:log_not_record_of_label`) even though its Y is valid. All 4,182 logs (2026-09-13): 4,172 are exact records; 10 are not, in two patterns. (i) Six native logs (`r0-24-exp-03`, `r0-26-exp-07`, `r0-27-exp-02`, `r0-27-exp-03`, `r0-28-exp-02`, `r0-28-exp-04`) all created 2026-09-06 19:25 UTC with Inspect status `started` and 10,550–11,060 of 13,190 samples: an unfinished batch whose completed rerun (results 20:37–20:52) produced the label, but whose final log was not the one uploaded. (ii) Four matrix `1_operational_pilot` cells (`gsm2-r0-26-exp-03@{G01,G02}`, `r0-29-exp-02@{G01,G02}`): complete `success` logs created 02:30–03:20 UTC on 2026-09-10 against result files from 05:23–06:19, i.e. the pilot was run twice and the first pass's logs were uploaded; per-sample agreement is 97–98 % for the greedy policy (batching nondeterminism) and 62–72 % for sampling. All ten are excluded; their labels remain in `labels.jsonl` for anyone who can supply the matching log. | The spec preserves Z so other targets can be derived from it; a Z that is not the evidence behind Y would silently break that. |
 | D7 | **Weight identity, aliases, split groups.** The matrix preflight hashed every archived checkpoint's shards (`weights_sha256`). Two checkpoint ids with equal weights *in one session* under the same S are one example: the later id becomes `status: alias` with `alias_of` (one directory archived under several cards: `aime-r0-30-exp-{02,05,07}`, `gsm2-r0-03-exp-{02,03}`, `gsm2-r0-21-exp-{01,03}`). Equal weights in *different* sessions (`r0-01-exp-01` and `r0-09-exp-01`: same recipe and seed, bit-identical result) stay two examples, as the spec says of independent re-executions, but their sessions are joined into one split group so they cannot straddle train and test. | Spec: "a record that re-evaluates an existing checkpoint without changing weights or S is an alias"; "independent re-executions of the same C are separate examples". |
-| D8 | **File-entry conventions, resolved deterministically at assembly.** (i) An inline script that *is* the launch command (`python -c`, `python - <<EOF`, a shell one-liner) needs no copy: `assemble.py` materializes `launch.command`. An inline script cited at another event (a data build consumed by a later launch) is materialized from that event's Bash command in the timeline. (ii) `templates/*.jinja` are PostTrainBench's own files: every copy recovered from a trace hashes to `third_party/PostTrainBench/src/eval/templates/<name>` (the three that differed had lost a trailing newline in `cat` output; no scientist edited a template), so they resolve from the submodule. (iii) Where an extractor replaced a heredoc body in `launch.command` with a pointer to the saved file, or kept only the launching part of a compound command, assembly restores the verbatim command from the trace (the agent's text is kept as `command_as_recorded`), except when the command references a card yaml — those stay redacted. (iv) Card yamls are never `files` entries. | The record must be the command as issued and every file it reads, without the assembler guessing; each rule is a deterministic lookup with the evidence named in `materialized_from`. |
+| D8 | **File-entry conventions, resolved deterministically at assembly.** (i) An inline script that *is* the launch command (`python -c`, `python - <<EOF`, a shell one-liner) needs no copy: `assemble.py` materializes `launch.command`. An inline script cited at another event (a data build consumed by a later launch) is materialized from that event's Bash command in the timeline. (ii) `templates/*.jinja` are PostTrainBench's own files: every copy recovered from a trace hashes to `third_party/PostTrainBench/src/eval/templates/<name>` (the three that differed had lost a trailing newline in `cat` output; no scientist edited a template), so they resolve from the submodule. (iii) Where an extractor replaced a heredoc body in `launch.command` with a pointer to the saved file, or kept only the launching part of a compound command, assembly restores the verbatim command from the trace (the agent's text is kept as `command_as_recorded`), except when the command references a card yaml — those stay redacted. (iv) Card yamls are never `files` entries. (v) Two versions of one file documented in one step (launch-time content and the pre-edit body it was derived from) materialize under distinct names (`<name>@<seq>`, or `@<sha8>` on a collision); every materialized file carries the sha256 of what was written, which `verify.py` re-hashes. | The record must be the command as issued and every file it reads, without the assembler guessing; each rule is a deterministic lookup with the evidence named in `materialized_from`. |
 | D9 | A target checkpoint with ten-run labels but **no submit event in its trace** stays without a record and is excluded as `x:no_launch_record`; the extractor does not invent an archive mapping. Found once: `r0-04-exp-10`, whose card was written and submitted from inside a Python heredoc (seq 242) that `prepare_targets.py` did not recognise as a submit — the repair round re-extracts it from that event. | No evidence, no X. |
 
 ## 4. Pipeline
@@ -157,6 +160,19 @@ Verifiers examine 21–67 seqs per record and write low-severity findings on cos
 smoke-test directory name in a note; `HF_HOME` listed as a command-line env when it is ambient), which
 is the depth wanted.
 
+**Outcome of the agent rounds (2026-09-13).** 124/124 cells verified: 582 records, 581 `confirmed`
+after repair, 0 `cannot_verify`. Eight cells went through repair + re-verification (`aime-r0-10`
+mangled `content_file` paths; `gsm2-r0-10`, `aime-r0-28`, `aime2-r0-08`, `aime2-r0-12`, `r0-09` file-version
+and chain details; `r0-29` pilot records without `archive_submit_seq`; `r0-04`, where the verifier
+flagged the missing `r0-04-exp-10` and the repair extracted it from the heredoc at seq 242, D9). The
+reviewing agent applied four fixes by hand, each recorded in the record's `revisions` with the
+evidence: card yamls removed from `files` (`aime-r0-11`), one-id `produced_by_step` (`aime-r0-14`),
+the second soup input of `r0-29-exp-05` moved into `additional_parents` (the round-2 finding; a
+third verifier round checks it), and `convert_data.py` re-labelled `entrypoint` on the convert step of
+`aime2-r0-32-exp-01`. `check_records.py` over the final records reports no defect a program can
+detect; its remaining lines are documentation entries (annotated superseded versions, a recorder-copy
+output) and the D8 materializations it does not model.
+
 **Pilot (2026-09-12).** Cells `r0-29` (5 checkpoints, GSM8K, incl. two weight soups) and
 `aime-r0-01` (5 checkpoints, AIME, incl. a two-parent merge) were extracted first and read by
 hand; all ten records validate against the schema. The pilot is what produced the
@@ -176,6 +192,9 @@ _Updated as steps complete._
 | matrix cells (examples with verified S) | 3,000 over 516 checkpoints | |
 | native runs on trace-bearing checkpoints | 582 | |
 | held-out sessions (matrix `locked_session_test`) | 40 of 124 | |
-| launch records (step 3) | 581 of 582 target checkpoints, all 124 cells (`r0-04-exp-10`: D9) | 2026-09-13 |
-| verified (step 3, verifier verdicts) | _in progress_ | 2026-09-13 |
+| launch records (step 3) | 582 of 582 target checkpoints, all 124 cells (`r0-04-exp-10` recovered in repair, D9) | 2026-09-13 |
+| verified (step 3, verifier verdicts) | 124 of 124 cells; 581 confirmed, 1 (`r0-29-exp-05`) fixed by review and under third-round verification | 2026-09-13 |
+| **eligible examples (step 4)** | **3,538** = 2,967 matrix + 571 native, over 582 checkpoints; 1,879 GSM8K + 1,659 AIME; train 1,837 / validation 492 / test 1,209; 28 aliases (D7) | 2026-09-13 |
+| excluded examples | 600 without a trace-bearing checkpoint (`x:no_launch_record`, D3 arms and `r0-04-exp-10`'s label rows are not among them), 143 native rows without archived configs (D1a), 10 whose log is not the record of the label (D6), 6 pending the `r0-29-exp-05` verdict | 2026-09-13 |
+| `verify.py` | 4,182 examples checked, no hard failures, 3,538 eligible clean | 2026-09-13 |
 | Z normalized (step 5) | 4,182 of 4,182 examples; 4,172 logs are the record of their label, 10 excluded (D6) | 2026-09-13 |

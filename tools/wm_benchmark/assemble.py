@@ -104,8 +104,11 @@ def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: 
         launch_seq = (step.get("launch") or {}).get("seq")
         for f in step.get("files", []):
             src = f.get("source", "")
-            dest = x_dir / "files" / step["step_id"].replace("/", "_") / Path(f["path"]).name
             content_file = f.get("content_file")
+            base = Path(content_file).name if content_file else Path(f["path"]).name
+            dest = x_dir / "files" / step["step_id"].replace("/", "_") / base
+            if dest.exists() and f.get("sha256") and hashlib.sha256(dest.read_bytes()).hexdigest() != f["sha256"]:
+                dest = dest.with_name(f"{base}@{f['sha256'][:8]}")   # two versions of one file documented in one step
             candidates = []
             if f.get("sha256"):
                 candidates.append(files_dir / f["sha256"])
@@ -118,7 +121,7 @@ def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: 
                 continue
             # An inline script (`python -c`, `python - <<EOF`, a shell one-liner) that is the
             # launch command itself has its content in launch.command; no separate copy is needed.
-            m = re.match(r"(inline|heredoc)@seq=(\d+)$", src)
+            m = re.match(r"(inline|heredoc)@seq=(\d+)(?:\s*\(.*)?$", src)
             if found is None and m and launch_seq is not None and int(m.group(2)) == launch_seq \
                     and f.get("role") == "inline_script" and (step.get("launch") or {}).get("command"):
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +129,7 @@ def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: 
                 dest.write_text(step["launch"]["command"])
                 f["materialized"] = str(dest.relative_to(x_dir))
                 f["materialized_from"] = "launch.command"
+                f["sha256"] = hashlib.sha256(dest.read_bytes()).hexdigest()
                 continue
             # An inline script in another event (a data build at seq N consumed by the launch at
             # seq M > N) whose text was not copied: its content is the Bash command at N.
@@ -135,6 +139,7 @@ def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: 
                 dest.write_text(cmds[int(m.group(2))])
                 f["materialized"] = str(dest.relative_to(x_dir))
                 f["materialized_from"] = f"timeline:{cell}:events.jsonl:seq={m.group(2)}"
+                f["sha256"] = hashlib.sha256(dest.read_bytes()).hexdigest()
                 continue
             ptb = _ptb_template(f["path"]) if found is None or f.get("sha256") else None
             if ptb is not None:
