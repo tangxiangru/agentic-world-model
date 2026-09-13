@@ -80,7 +80,7 @@ Each step is a script under `tools/wm_benchmark/`; outputs live under `data/benc
 
 | step | script | input | output | how to check |
 |---|---|---|---|---|
-| 0 mirror | `data/mirror_download.py` | HF | `data/hf-mirror/` | file count and sizes vs the HF tree |
+| 0 mirror | `mirror_download.py` + `mirror_fetch.py` (runbook: `tools/wm_benchmark/README.md`) | HF | `data/hf-mirror/` | file count and sizes vs the HF tree |
 | 1 timeline | `trace_timeline.py` | `cells/*/solve_out_sanitized.txt` | `data/timeline/<cell>/{events.jsonl,fs.jsonl,summary.json,results/}` + `_files/<sha256>` | open `summary.json`; every `awm wm submit` and every launch is listed with its result |
 | 2 labels | `build_labels.py` | matrix + rescore10 results, policies, checkpoints_meta | `data/benchmark/labels.jsonl`, `labels_summary.json` | Y recomputed from `per_problem`; mismatches are listed, not fixed. Result 2026-09-12: 4,182 rows; 3,000 matrix valid; 1,039 native valid, 143 native invalid (no archived `config.json`/`generation_config.json`: 97 `opus47max-r0`, 46 `opus5max-r0`); 573 native rows carry `sample_errors_unknown_until_log_checked` (older result files lack the field; step 5 settles it) |
 | 3a targets | `prepare_targets.py` | labels + timeline | `data/benchmark/targets/<cell>.json` | per cell: the labeled checkpoints, their submit events, candidate launches, the yaml's `output_checkpoint` (hints only). 124 cells, 582 checkpoints |
