@@ -86,6 +86,23 @@ For each target checkpoint, one JSON file
   the directory held at the closing submit. Say which launch that was and note the overwrite.
 - If a target's checkpoint was produced by averaging or copying other directories, those
   directories' own chains are part of this record (as earlier steps), back to the base model.
+- File-entry conventions (so `assemble.py` can materialize every file without guessing):
+  - An inline script that *is* the launch command (`python -c "..."`, `python - <<EOF`, a shell
+    one-liner or redirection in the same Bash event) is listed with `role: inline_script`,
+    `source: inline@seq=<launch seq>` (or `heredoc@seq=`), and may leave `content_file` null:
+    its content is `launch.command`. A heredoc that *creates a file* which a later event runs
+    must be saved under `files/<basename>@<seq>` and cited with `content_file`.
+  - `templates/*.jinja` (qwen3.jinja, gemma3.jinja, …) are PostTrainBench's own files; every
+    copy recovered from a trace hashes to `third_party/PostTrainBench/src/eval/templates/<name>`
+    (modulo a trailing newline lost in `cat` output). Cite them with
+    `source: ptb@src/eval/templates/<name>` and the seq where the trace shows the file was read
+    or used; no copy is needed unless the scientist edited the template (then the edited content
+    is X and must be saved).
+  - A file whose full content never appears in the trace (only `head`/`tail` printed, or read
+    by a tool whose result was truncated) gets `source: unavailable:<what was seen and where>`,
+    `sha256: null`, `content_file: null`. Do not stitch partial prints into a guessed file.
+  - Card yamls (`memory/cards/exp-NN.yaml`) are never `files` entries, not even for a
+    checkpoint-selection step: they are the join key only, and they embed scores.
 - Write the JSON files yourself (Write tool). Writing a file that already exists replaces it,
   which is all the replacing that is wanted. **Never delete anything.** Do not `rm`, `rm -rf`,
   `mv` or otherwise clear your cell's directory, `files/`, or any record already in it, not even

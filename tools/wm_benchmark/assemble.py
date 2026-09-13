@@ -22,6 +22,7 @@ reasons, so a reader can see what was excluded and why.
 from __future__ import annotations
 
 import hashlib
+import re
 import json
 import shutil
 import sys
@@ -48,10 +49,24 @@ def validate_record(record: dict, schema: dict) -> list[str]:
     return [f"missing:{k}" for k in schema["required"] if k not in record]
 
 
+PTB_TEMPLATES = REPO / "third_party/PostTrainBench/src/eval/templates"
+
+
+def _ptb_template(path: str):
+    """The scientists' `templates/<name>.jinja` are PostTrainBench's own files, unchanged: every
+    copy recovered from a trace hashes to the submodule's file (modulo a trailing newline lost
+    in `cat` output). Resolve them from the submodule when the record cites one."""
+    if "templates/" in path and path.endswith(".jinja"):
+        cand = PTB_TEMPLATES / Path(path).name
+        return cand if cand.exists() else None
+    return None
+
+
 def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: Path) -> list[str]:
     """Copy every cited file's launch-time content next to the record; return problems."""
     problems = []
     for step in record.get("steps", []):
+        launch_seq = (step.get("launch") or {}).get("seq")
         for f in step.get("files", []):
             src = f.get("source", "")
             dest = x_dir / "files" / step["step_id"].replace("/", "_") / Path(f["path"]).name
@@ -66,6 +81,31 @@ def materialize(record: dict, cell: str, x_dir: Path, files_dir: Path, raw_dir: 
             found = next((c for c in candidates if c.exists()), None)
             if src.startswith("unavailable"):
                 continue
+            # An inline script (`python -c`, `python - <<EOF`, a shell one-liner) that is the
+            # launch command itself has its content in launch.command; no separate copy is needed.
+            m = re.match(r"(inline|heredoc)@seq=(\d+)$", src)
+            if found is None and m and launch_seq is not None and int(m.group(2)) == launch_seq \
+                    and f.get("role") == "inline_script" and (step.get("launch") or {}).get("command"):
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest = dest.with_name(dest.name + ".launch_command.txt")
+                dest.write_text(step["launch"]["command"])
+                f["materialized"] = str(dest.relative_to(x_dir))
+                f["materialized_from"] = "launch.command"
+                continue
+            ptb = _ptb_template(f["path"]) if found is None or f.get("sha256") else None
+            if ptb is not None:
+                ptb_sha = hashlib.sha256(ptb.read_bytes()).hexdigest()
+                rec_sha = f.get("sha256")
+                same = rec_sha in (None, ptb_sha) or (found is not None and found.read_bytes().rstrip(b"\n") == ptb.read_bytes().rstrip(b"\n"))
+                if found is None and rec_sha not in (None, ptb_sha):
+                    same = False
+                if same:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(ptb, dest)
+                    f["materialized"] = str(dest.relative_to(x_dir))
+                    f["materialized_from"] = "third_party/PostTrainBench/src/eval/templates"
+                    f["sha256"] = ptb_sha
+                    continue
             if found is None:
                 problems.append(f"{step['step_id']}:{f['path']}: content not found ({src})")
                 continue
